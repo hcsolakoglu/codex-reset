@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a bug in codex-reset
+labels: ['bug']
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Exact commands to reproduce
+      value: |
+        1. Run `codex-reset ...`
+        2. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: codex-reset version
+      description: Output of `codex-reset --version`
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - WSL
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      description: e.g. bash, zsh, fish, PowerShell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: CLI output
+      description: Paste the full output (use --json if relevant)
+      render: shell

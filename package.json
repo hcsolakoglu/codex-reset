@@ -1,0 +1,53 @@
+{
+  "name": "codex-reset",
+  "version": "0.1.0",
+  "description": "Inspect and redeem Codex rate-limit reset credits from the command line",
+  "type": "module",
+  "bin": {
+    "codex-reset": "./bin/codex-reset.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/format.test.ts test/accounts.test.ts test/cli.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage test/format.test.ts test/accounts.test.ts test/cli.test.ts",
+    "prepack": "npm run build && npm run typecheck && npm run lint",
+    "smoke": "npm pack --dry-run"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "rate-limit",
+    "reset",
+    "credits",
+    "cli",
+    "codex-cli",
+    "codex-auth"
+  ],
+  "license": "MIT",
+  "author": "codex-reset contributors",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.0",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.4",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  }
+}
