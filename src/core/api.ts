@@ -19,7 +19,7 @@ import { ApiError } from '../utils/errors.js';
 
 const BASE_HOST = 'chatgpt.com';
 const BASE_PATH = '/backend-api/wham';
-const USER_AGENT = 'codex-reset/0.2.0';
+const USER_AGENT = 'codex-reset/0.2.1';
 const TIMEOUT_MS = 15_000;
 
 interface RequestOptions {

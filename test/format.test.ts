@@ -97,6 +97,8 @@ describe('rateLimitWindowLabel', () => {
   it('uses the backend duration instead of assuming primary is always 5h', () => {
     assert.strictEqual(rateLimitWindowLabel('primary', 604800), 'Weekly limit');
     assert.strictEqual(rateLimitWindowLabel('secondary', null), 'Secondary limit');
+    assert.strictEqual(rateLimitWindowLabel('primary', 86400 * 1.02), 'Daily limit');
+    assert.strictEqual(rateLimitWindowLabel('secondary', 31_536_000 * 0.98), 'Annual limit');
   });
 });
 

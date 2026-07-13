@@ -1,6 +1,6 @@
 {
   "name": "codex-reset",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Inspect and redeem Codex rate-limit reset credits from the command line",
   "type": "module",
   "bin": {

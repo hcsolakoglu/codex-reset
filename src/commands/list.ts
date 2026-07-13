@@ -81,6 +81,10 @@ function lowestPercentLeft(values: Array<number | null>): number | 'n/a' {
   return available.length === 0 ? 'n/a' : Math.min(...available.map(percentLeft));
 }
 
+function formatLowestSummary(label: string, value: number | 'n/a'): string {
+  return `${label} ${value === 'n/a' ? 'n/a' : `${value}%`}`;
+}
+
 /** Render the list output (human-readable). */
 function renderList(usages: AccountUsage[]): string {
   const lines: string[] = [];
@@ -138,7 +142,7 @@ function renderList(usages: AccountUsage[]): string {
 
   lines.push('');
   lines.push(
-    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: ${primarySummaryLabel} ${lowest5h}%, ${secondarySummaryLabel} ${lowestWeekly}%${reset}`,
+    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: ${formatLowestSummary(primarySummaryLabel, lowest5h)}, ${formatLowestSummary(secondarySummaryLabel, lowestWeekly)}${reset}`,
   );
 
   if (totalCredits > 0 && exhausted > 0) {

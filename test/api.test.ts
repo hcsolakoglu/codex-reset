@@ -5,6 +5,8 @@ import {
   normalizeConsumeResponse,
   normalizeUsage,
 } from '../src/core/api.ts';
+import { canUseCountOnlyCreditFallback, hasUsableUsage } from '../src/commands/reset.ts';
+import { ApiError } from '../src/utils/errors.ts';
 import type { Account } from '../src/core/types.ts';
 
 const account: Account = {
@@ -54,6 +56,34 @@ describe('normalizeUsage', () => {
     assert.equal(result.primaryPercent, null);
     assert.equal(result.secondaryPercent, null);
     assert.equal(result.availableCredits, 0);
+  });
+});
+
+describe('reset safety helpers', () => {
+  it('recognizes only unsupported credit-detail endpoints for count fallback', () => {
+    assert.equal(canUseCountOnlyCreditFallback(new ApiError('not found', 404), 1), true);
+    assert.equal(canUseCountOnlyCreditFallback(new ApiError('method', 405), 1), true);
+    assert.equal(canUseCountOnlyCreditFallback(new ApiError('server', 500), 1), false);
+    assert.equal(canUseCountOnlyCreditFallback(new ApiError('not found', 404), 0), false);
+  });
+
+  it('requires at least one usage window before a reset can proceed', () => {
+    const unavailable = normalizeUsage(account, { rate_limit: null });
+    const oneWindow = normalizeUsage(account, {
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          used_percent: 42,
+          limit_window_seconds: 604800,
+          reset_at: 1_750_000_000,
+        },
+        secondary_window: null,
+      },
+    });
+
+    assert.equal(hasUsableUsage(unavailable), false);
+    assert.equal(hasUsableUsage(oneWindow), true);
   });
 });
 

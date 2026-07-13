@@ -97,6 +97,7 @@ codex-reset reset --json --yes # confirmed non-interactive JSON mode
 
 `--json` never confirms a destructive operation by itself. Passing `--json`
 without `--yes` exits safely before any network request or consume request.
+Batch mode emits exactly one JSON document with a `results` array.
 
 Output shows before/after comparison:
 

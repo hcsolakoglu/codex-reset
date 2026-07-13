@@ -107,9 +107,13 @@ export function rateLimitWindowLabel(
   kind: 'primary' | 'secondary',
   windowSeconds: number | null,
 ): string {
-  if (windowSeconds === 18_000) return '5h limit';
-  if (windowSeconds === 604_800) return 'Weekly limit';
-  if (windowSeconds === 2_592_000) return 'Monthly limit';
+  const approximately = (target: number): boolean =>
+    windowSeconds !== null && Math.abs(windowSeconds - target) / target <= 0.05;
+  if (approximately(18_000)) return '5h limit';
+  if (approximately(86_400)) return 'Daily limit';
+  if (approximately(604_800)) return 'Weekly limit';
+  if (approximately(2_592_000)) return 'Monthly limit';
+  if (approximately(31_536_000)) return 'Annual limit';
   return kind === 'primary' ? 'Primary limit' : 'Secondary limit';
 }
 

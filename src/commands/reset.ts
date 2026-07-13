@@ -23,13 +23,40 @@ import {
   truncate,
 } from '../utils/format.js';
 import { gr, g, y, r, dim, bold, reset } from '../utils/colors.js';
-import { CliError } from '../utils/errors.js';
+import { ApiError, CliError } from '../utils/errors.js';
 
 interface ResetOptions {
   json: boolean;
   yes: boolean;
   all: boolean;
   query?: string;
+}
+
+export interface ResetResult {
+  outcome: string;
+  windowsReset: number;
+  account?: string;
+  creditId?: string | null;
+  before?: {
+    primary: number | null;
+    secondary: number | null;
+    credits: number;
+  };
+  after?: {
+    primary: number | null;
+    secondary: number | null;
+    credits: number;
+  } | null;
+}
+
+interface ResetBatchResult {
+  email: string;
+  outcome: string;
+  windowsReset: number;
+}
+
+export function serializeResetResults(results: ResetBatchResult[]): string {
+  return JSON.stringify({ results }) + '\n';
 }
 
 /** Fetch usage for a single account using the null-safe API normalizer. */
@@ -42,6 +69,18 @@ function needsReset(u: AccountUsage): boolean {
   return (
     u.availableCredits > 0 &&
     [u.primaryPercent, u.secondaryPercent].some((percent) => percent !== null && percent >= 80)
+  );
+}
+
+export function hasUsableUsage(u: AccountUsage): boolean {
+  return u.primaryPercent !== null || u.secondaryPercent !== null;
+}
+
+export function canUseCountOnlyCreditFallback(error: unknown, availableCredits: number): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.statusCode === 404 || error.statusCode === 405) &&
+    availableCredits > 0
   );
 }
 
@@ -81,7 +120,18 @@ async function chooseCredit(
   usage: AccountUsage,
   options: ResetOptions,
 ): Promise<ResetCredit | undefined> {
-  const response = await getCredits(usage.account);
+  let response;
+  try {
+    response = await getCredits(usage.account);
+  } catch (error) {
+    // Older backends may not expose credit details. Preserve the count-only
+    // consume path for explicit unsupported-endpoint responses, but fail
+    // closed on auth, network, and malformed-response failures.
+    if (canUseCountOnlyCreditFallback(error, usage.availableCredits)) {
+      return undefined;
+    }
+    throw error;
+  }
   const available = sortAvailableCredits(response.credits);
 
   // Keep compatibility with older backends that expose only available_count.
@@ -136,10 +186,15 @@ function displayWindow(percent: number | null): string {
 }
 
 /** Execute a single reset and show before/after. */
-async function executeReset(
-  usage: AccountUsage,
-  options: ResetOptions,
-): Promise<{ outcome: string; windowsReset: number }> {
+async function executeReset(usage: AccountUsage, options: ResetOptions): Promise<ResetResult> {
+  if (!hasUsableUsage(usage)) {
+    throw new CliError(
+      `Cannot reset ${usage.account.email}: usage windows are unavailable`,
+      2,
+      'Retry after the usage endpoint returns at least one valid window.',
+    );
+  }
+
   const credit = await chooseCredit(usage, options);
   if (usage.availableCredits > 0 && credit === undefined && options.yes) {
     // A legacy response can report a count without individual credit details.
@@ -169,17 +224,13 @@ async function executeReset(
     throw new CliError('No reset credits available for this account', 1);
   }
   if (result.code === 'nothingToReset') {
-    if (options.json) {
-      process.stdout.write(JSON.stringify({ outcome: 'nothingToReset', windowsReset: 0 }) + '\n');
-    } else {
+    if (!options.json) {
       process.stdout.write(`${y('Usage does not need a reset right now.')}\n`);
     }
     return { outcome: 'nothingToReset', windowsReset: 0 };
   }
   if (result.code === 'alreadyRedeemed') {
-    if (options.json) {
-      process.stdout.write(JSON.stringify({ outcome: 'alreadyRedeemed', windowsReset: 0 }) + '\n');
-    } else {
+    if (!options.json) {
       process.stdout.write(`${y('This reset was already redeemed.')}\n`);
     }
     return { outcome: 'alreadyRedeemed', windowsReset: 0 };
@@ -192,28 +243,7 @@ async function executeReset(
     // The reset succeeded even if the follow-up status request is unavailable.
   }
 
-  if (options.json) {
-    process.stdout.write(
-      JSON.stringify({
-        outcome: 'reset',
-        windowsReset,
-        account: usage.account.email,
-        creditId: credit?.id ?? null,
-        before: {
-          primary: usage.primaryPercent,
-          secondary: usage.secondaryPercent,
-          credits: usage.availableCredits,
-        },
-        after: afterUsage
-          ? {
-              primary: afterUsage.primaryPercent,
-              secondary: afterUsage.secondaryPercent,
-              credits: afterUsage.availableCredits,
-            }
-          : null,
-      }) + '\n',
-    );
-  } else {
+  if (!options.json) {
     process.stdout.write(`\n  ${g('✓')} ${bold}Reset successful${reset} for ${label}\n`);
     process.stdout.write(`  ${dim}Windows reset: ${windowsReset}${reset}\n\n`);
 
@@ -231,7 +261,24 @@ async function executeReset(
     process.stdout.write('\n');
   }
 
-  return { outcome: 'reset', windowsReset };
+  return {
+    outcome: 'reset',
+    windowsReset,
+    account: usage.account.email,
+    creditId: credit?.id ?? null,
+    before: {
+      primary: usage.primaryPercent,
+      secondary: usage.secondaryPercent,
+      credits: usage.availableCredits,
+    },
+    after: afterUsage
+      ? {
+          primary: afterUsage.primaryPercent,
+          secondary: afterUsage.secondaryPercent,
+          credits: afterUsage.availableCredits,
+        }
+      : null,
+  };
 }
 
 /** Reset command entry point. */
@@ -277,7 +324,7 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
       process.stdout.write(`\n  ${bold}Resetting ${eligible.length} account(s):${reset}\n`);
     }
 
-    const results: { email: string; outcome: string; windowsReset: number }[] = [];
+    const results: ResetBatchResult[] = [];
     for (const usage of eligible) {
       try {
         const result = await executeReset(usage, options);
@@ -293,7 +340,7 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     }
 
     if (options.json) {
-      process.stdout.write(JSON.stringify({ results }) + '\n');
+      process.stdout.write(serializeResetResults(results));
     } else {
       const succeeded = results.filter((result) => result.outcome === 'reset').length;
       process.stdout.write(
@@ -342,6 +389,17 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     const usage = usages.find((candidate) => candidate.account === account);
     if (!usage) throw new CliError(`Could not fetch usage for "${options.query}"`, 3);
 
+    if (!hasUsableUsage(usage)) {
+      if (options.json) {
+        process.stdout.write(
+          JSON.stringify({ outcome: 'usageUnavailable', account: account.email }) + '\n',
+        );
+      } else {
+        process.stdout.write(`${y(`Usage windows unavailable for ${account.email}`)}\n`);
+      }
+      return;
+    }
+
     if (usage.availableCredits === 0) {
       if (options.json) {
         process.stdout.write(
@@ -352,12 +410,13 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
       }
       return;
     }
-    await executeReset(usage, options);
+    const result = await executeReset(usage, options);
+    if (options.json) process.stdout.write(JSON.stringify(result) + '\n');
     return;
   }
 
   const eligible = usages.filter(needsReset);
-  const hasCredits = usages.filter((usage) => usage.availableCredits > 0);
+  const hasCredits = usages.filter((usage) => usage.availableCredits > 0 && hasUsableUsage(usage));
   if (hasCredits.length === 0) {
     process.stdout.write(`${gr('No reset credits available on any account.')}\n`);
     return;
@@ -406,5 +465,6 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     await resetMany(eligible);
     return;
   }
-  await executeReset(hasCredits[selected]!, options);
+  const result = await executeReset(hasCredits[selected]!, options);
+  if (options.json) process.stdout.write(JSON.stringify(result) + '\n');
 }
