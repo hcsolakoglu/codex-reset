@@ -7,9 +7,21 @@
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { discoverAccounts, findAccount } from '../core/accounts.js';
-import { getUsage, consumeCredit, generateRequestId } from '../core/api.js';
-import type { Account, AccountUsage } from '../core/types.js';
-import { formatLimitBar, formatLimitLine, planBadge, truncate } from '../utils/format.js';
+import {
+  getCredits,
+  getUsage,
+  consumeCredit,
+  generateRequestId,
+  normalizeUsage,
+} from '../core/api.js';
+import type { Account, AccountUsage, ResetCredit } from '../core/types.js';
+import {
+  formatLimitBar,
+  formatLimitLine,
+  planBadge,
+  rateLimitWindowLabel,
+  truncate,
+} from '../utils/format.js';
 import { gr, g, y, r, dim, bold, reset } from '../utils/colors.js';
 import { CliError } from '../utils/errors.js';
 
@@ -20,25 +32,73 @@ interface ResetOptions {
   query?: string;
 }
 
-/** Fetch usage for a single account. */
+/** Fetch usage for a single account using the null-safe API normalizer. */
 async function fetchUsage(account: Account): Promise<AccountUsage> {
-  const usage = await getUsage(account);
-  return {
-    account,
-    primaryPercent: usage.rate_limit.primary_window.used_percent,
-    secondaryPercent: usage.rate_limit.secondary_window.used_percent,
-    primaryResetAt: usage.rate_limit.primary_window.reset_at ?? null,
-    secondaryResetAt: usage.rate_limit.secondary_window.reset_at ?? null,
-    availableCredits: usage.rate_limit_reset_credits?.available_count ?? 0,
-    rateLimitReachedType: usage.rate_limit_reached_type?.type ?? null,
-    fetchedAt: Date.now(),
-  };
+  return normalizeUsage(account, await getUsage(account));
 }
 
-/** Check if an account would benefit from a reset (has credits + exhausted windows). */
+/** Check if an account would benefit from a reset (has credits + high usage). */
 function needsReset(u: AccountUsage): boolean {
-  if (u.availableCredits === 0) return false;
-  return u.primaryPercent >= 80 || u.secondaryPercent >= 80;
+  return (
+    u.availableCredits > 0 &&
+    [u.primaryPercent, u.secondaryPercent].some((percent) => percent !== null && percent >= 80)
+  );
+}
+
+function activeWindowDescription(u: AccountUsage, credit?: ResetCredit): string {
+  const creditScope = credit?.title?.trim() || credit?.reset_type?.trim();
+  if (creditScope) return creditScope;
+
+  const labels = [
+    u.primaryPercent === null
+      ? null
+      : rateLimitWindowLabel('primary', u.primaryWindowSeconds).replace(/ limit$/, ''),
+    u.secondaryPercent === null
+      ? null
+      : rateLimitWindowLabel('secondary', u.secondaryWindowSeconds).replace(/ limit$/, ''),
+  ].filter((label): label is string => label !== null);
+  return labels.length > 0 ? labels.join(' + ') : 'current usage windows';
+}
+
+function sortAvailableCredits(credits: ResetCredit[]): ResetCredit[] {
+  return credits
+    .filter((credit) => credit.status.toLowerCase() === 'available')
+    .sort((a, b) => {
+      if (a.expires_at === null) return b.expires_at === null ? 0 : 1;
+      if (b.expires_at === null) return -1;
+      return new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime();
+    });
+}
+
+function creditLabel(credit: ResetCredit, index: number): string {
+  const title = credit.title?.trim() || credit.reset_type;
+  const expiry = credit.expires_at === null ? 'no expiry' : `expires ${credit.expires_at}`;
+  return `${index + 1}. ${title} (${expiry})`;
+}
+
+/** Load details and choose the soonest-expiring credit, with an interactive picker if needed. */
+async function chooseCredit(
+  usage: AccountUsage,
+  options: ResetOptions,
+): Promise<ResetCredit | undefined> {
+  const response = await getCredits(usage.account);
+  const available = sortAvailableCredits(response.credits);
+
+  // Keep compatibility with older backends that expose only available_count.
+  if (available.length === 0) {
+    if (usage.availableCredits > 0) return undefined;
+    return undefined;
+  }
+
+  if (available.length === 1 || options.yes) return available[0];
+
+  process.stdout.write(`\n  ${bold}Select a reset credit:${reset}\n`);
+  available.forEach((credit, index) => {
+    process.stdout.write(`  ${creditLabel(credit, index)}\n`);
+    if (credit.description) process.stdout.write(`     ${dim}${credit.description}${reset}\n`);
+  });
+  const selected = await pickFromList(`\n  ${dim}Enter number:${reset} `, available.length);
+  return selected === -1 || selected === 'all' ? undefined : available[selected];
 }
 
 /** Prompt the user for yes/no confirmation. */
@@ -52,17 +112,27 @@ async function confirm(prompt: string): Promise<boolean> {
   }
 }
 
-/** Prompt the user to pick from a numbered list. Returns 0-based index or -1. */
-async function pickFromList(prompt: string, count: number): Promise<number> {
+/** Prompt the user to pick from a numbered list. */
+async function pickFromList(
+  prompt: string,
+  count: number,
+  allowAll = false,
+): Promise<number | 'all' | -1> {
   const rl = readline.createInterface({ input, output });
   try {
-    const answer = await rl.question(prompt);
-    const n = parseInt(answer.trim(), 10);
-    if (isNaN(n) || n < 1 || n > count) return -1;
+    const answer = (await rl.question(prompt)).trim().toLowerCase();
+    if (allowAll && answer === 'all') return 'all';
+    if (!/^[1-9]\d*$/.test(answer)) return -1;
+    const n = Number(answer);
+    if (!Number.isSafeInteger(n) || n < 1 || n > count) return -1;
     return n - 1;
   } finally {
     rl.close();
   }
+}
+
+function displayWindow(percent: number | null): string {
+  return percent === null ? `${dim}unavailable${reset}` : formatLimitBar(percent);
 }
 
 /** Execute a single reset and show before/after. */
@@ -70,12 +140,21 @@ async function executeReset(
   usage: AccountUsage,
   options: ResetOptions,
 ): Promise<{ outcome: string; windowsReset: number }> {
-  const redeemRequestId = generateRequestId();
+  const credit = await chooseCredit(usage, options);
+  if (usage.availableCredits > 0 && credit === undefined && options.yes) {
+    // A legacy response can report a count without individual credit details.
+  } else if (usage.availableCredits > 0 && credit === undefined) {
+    process.stdout.write(`${gr('Cancelled.')}\n`);
+    return { outcome: 'cancelled', windowsReset: 0 };
+  }
 
-  if (!options.json && !options.yes) {
-    const label = usage.account.alias || usage.account.email;
+  const redeemRequestId = generateRequestId();
+  const label = usage.account.alias || usage.account.email;
+  const scope = activeWindowDescription(usage, credit);
+
+  if (!options.yes) {
     const confirmed = await confirm(
-      `\n  ${bold}Reset ${label}?${reset} ${dim}(uses 1 credit, resets 5h + 7d windows)${reset} [y/N] `,
+      `\n  ${bold}Reset ${label}?${reset} ${dim}(uses 1 credit, resets ${scope})${reset} [y/N] `,
     );
     if (!confirmed) {
       process.stdout.write(`${gr('Cancelled.')}\n`);
@@ -83,8 +162,8 @@ async function executeReset(
     }
   }
 
-  // Consume
-  const result = await consumeCredit(usage.account, redeemRequestId);
+  const result = await consumeCredit(usage.account, redeemRequestId, credit?.id);
+  const windowsReset = result.windows_reset ?? 0;
 
   if (result.code === 'noCredit') {
     throw new CliError('No reset credits available for this account', 1);
@@ -106,20 +185,20 @@ async function executeReset(
     return { outcome: 'alreadyRedeemed', windowsReset: 0 };
   }
 
-  // Fetch after state
   let afterUsage: AccountUsage | null = null;
   try {
     afterUsage = await fetchUsage(usage.account);
   } catch {
-    // Non-fatal — the reset still succeeded
+    // The reset succeeded even if the follow-up status request is unavailable.
   }
 
   if (options.json) {
     process.stdout.write(
       JSON.stringify({
         outcome: 'reset',
-        windowsReset: result.windows_reset,
+        windowsReset,
         account: usage.account.email,
+        creditId: credit?.id ?? null,
         before: {
           primary: usage.primaryPercent,
           secondary: usage.secondaryPercent,
@@ -135,17 +214,15 @@ async function executeReset(
       }) + '\n',
     );
   } else {
-    const label = usage.account.alias || usage.account.email;
     process.stdout.write(`\n  ${g('✓')} ${bold}Reset successful${reset} for ${label}\n`);
-    process.stdout.write(`  ${dim}Windows reset: ${result.windows_reset}${reset}\n\n`);
+    process.stdout.write(`  ${dim}Windows reset: ${windowsReset}${reset}\n\n`);
 
-    // Before/after comparison
     if (afterUsage) {
       process.stdout.write(
-        `  ${dim}5h limit:${reset}      ${formatLimitBar(usage.primaryPercent)} → ${formatLimitBar(afterUsage.primaryPercent)}\n`,
+        `  ${dim}${rateLimitWindowLabel('primary', usage.primaryWindowSeconds)}:${reset} ${displayWindow(usage.primaryPercent)} → ${displayWindow(afterUsage.primaryPercent)}\n`,
       );
       process.stdout.write(
-        `  ${dim}Weekly limit:${reset}  ${formatLimitBar(usage.secondaryPercent)} → ${formatLimitBar(afterUsage.secondaryPercent)}\n`,
+        `  ${dim}${rateLimitWindowLabel('secondary', usage.secondaryWindowSeconds)}:${reset} ${displayWindow(usage.secondaryPercent)} → ${displayWindow(afterUsage.secondaryPercent)}\n`,
       );
       process.stdout.write(
         `  ${dim}Credits:${reset}  ${usage.availableCredits} → ${g(`${afterUsage.availableCredits}`)} ${dim}left${reset}\n`,
@@ -154,11 +231,20 @@ async function executeReset(
     process.stdout.write('\n');
   }
 
-  return { outcome: 'reset', windowsReset: result.windows_reset };
+  return { outcome: 'reset', windowsReset };
 }
 
 /** Reset command entry point. */
 export async function resetCommand(options: ResetOptions): Promise<void> {
+  // JSON is non-interactive, so never let it silently perform a destructive POST.
+  if (options.json && !options.yes) {
+    throw new CliError(
+      'Refusing to redeem a reset without explicit confirmation',
+      2,
+      'Use `--json --yes` when running a confirmed non-interactive reset.',
+    );
+  }
+
   const accounts = await discoverAccounts();
   if (accounts.length === 0) {
     throw new CliError(
@@ -168,7 +254,6 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     );
   }
 
-  // Fetch usage for all accounts in parallel
   const usageResults = await Promise.allSettled(accounts.map(fetchUsage));
   const usages: AccountUsage[] = [];
   for (let i = 0; i < usageResults.length; i++) {
@@ -187,18 +272,7 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     throw new CliError('Failed to fetch usage for all accounts', 3);
   }
 
-  // --all: reset all eligible accounts
-  if (options.all) {
-    const eligible = usages.filter(needsReset);
-    if (eligible.length === 0) {
-      if (options.json) {
-        process.stdout.write(JSON.stringify({ outcome: 'noEligibleAccounts' }) + '\n');
-      } else {
-        process.stdout.write(`${gr('No accounts need a reset right now.')}\n`);
-      }
-      return;
-    }
-
+  const resetMany = async (eligible: AccountUsage[]): Promise<void> => {
     if (!options.json) {
       process.stdout.write(`\n  ${bold}Resetting ${eligible.length} account(s):${reset}\n`);
     }
@@ -206,7 +280,7 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     const results: { email: string; outcome: string; windowsReset: number }[] = [];
     for (const usage of eligible) {
       try {
-        const result = await executeReset(usage, { ...options, yes: options.yes });
+        const result = await executeReset(usage, options);
         results.push({ email: usage.account.email, ...result });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -221,18 +295,40 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
     if (options.json) {
       process.stdout.write(JSON.stringify({ results }) + '\n');
     } else {
-      const succeeded = results.filter((r) => r.outcome === 'reset').length;
+      const succeeded = results.filter((result) => result.outcome === 'reset').length;
       process.stdout.write(
         `\n  ${g(`${succeeded}`)} reset, ${eligible.length - succeeded} skipped/error\n`,
       );
     }
+  };
+
+  if (options.all) {
+    const eligible = usages.filter(needsReset);
+    if (eligible.length === 0) {
+      if (options.json)
+        process.stdout.write(JSON.stringify({ outcome: 'noEligibleAccounts' }) + '\n');
+      else process.stdout.write(`${gr('No accounts need a reset right now.')}\n`);
+      return;
+    }
+    await resetMany(eligible);
     return;
   }
 
-  // Direct query: find specific account
   if (options.query) {
+    const normalizedQuery = options.query.toLowerCase();
+    const accountIdMatches = usages.filter((usage) =>
+      usage.account.accountId.toLowerCase().startsWith(normalizedQuery),
+    );
+    if (!/^[1-9]\d*$/.test(options.query) && accountIdMatches.length > 1) {
+      throw new CliError(
+        `Account ID query "${options.query}" is ambiguous`,
+        1,
+        'Use the account email, alias, or numeric index instead.',
+      );
+    }
+
     const account = findAccount(
-      usages.map((u) => u.account),
+      usages.map((usage) => usage.account),
       options.query,
     );
     if (!account) {
@@ -242,10 +338,9 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
         'Use `codex-reset list` to see available accounts.',
       );
     }
-    const usage = usages.find((u) => u.account.accountId === account.accountId);
-    if (!usage) {
-      throw new CliError(`Could not fetch usage for "${options.query}"`, 3);
-    }
+    // Match the object, not only accountId: several stored credentials can share a workspace ID.
+    const usage = usages.find((candidate) => candidate.account === account);
+    if (!usage) throw new CliError(`Could not fetch usage for "${options.query}"`, 3);
 
     if (usage.availableCredits === 0) {
       if (options.json) {
@@ -257,54 +352,59 @@ export async function resetCommand(options: ResetOptions): Promise<void> {
       }
       return;
     }
-
     await executeReset(usage, options);
     return;
   }
 
-  // Interactive: show picker
   const eligible = usages.filter(needsReset);
-  const hasCredits = usages.filter((u) => u.availableCredits > 0);
-
+  const hasCredits = usages.filter((usage) => usage.availableCredits > 0);
   if (hasCredits.length === 0) {
     process.stdout.write(`${gr('No reset credits available on any account.')}\n`);
     return;
   }
 
-  // Show all accounts with credits
   process.stdout.write(`\n  ${bold}Select an account to reset:${reset}\n\n`);
   for (let i = 0; i < hasCredits.length; i++) {
-    const u = hasCredits[i]!;
+    const usage = hasCredits[i]!;
     const num = `${dim}${(i + 1).toString().padStart(2)}${reset}`;
-    const rawLabel = u.account.alias || u.account.accountName || u.account.email;
+    const rawLabel = usage.account.alias || usage.account.accountName || usage.account.email;
     const label = truncate(rawLabel, 28);
-    const email = truncate(u.account.email, 36);
-    const emailSuffix = rawLabel === u.account.email ? '' : `  ${dim}<${email}>${reset}`;
-    const plan = planBadge(u.account.planType);
-    const credits = g(`${u.availableCredits}`);
-    const needs = needsReset(u) ? y(' ← needs reset') : '';
+    const email = truncate(usage.account.email, 36);
+    const emailSuffix = rawLabel === usage.account.email ? '' : `  ${dim}<${email}>${reset}`;
+    const needs = needsReset(usage) ? y(' ← needs reset') : '';
     process.stdout.write(
-      `  ${num}  ${bold}${label}${reset}${emailSuffix}  ${plan}  ${credits}c${needs}\n`,
+      `  ${num}  ${bold}${label}${reset}${emailSuffix}  ${planBadge(usage.account.planType)}  ${g(`${usage.availableCredits}`)}c${needs}\n`,
     );
     process.stdout.write(
-      `      ${formatLimitLine('5h limit', u.primaryPercent, u.primaryResetAt)}\n`,
+      `      ${formatLimitLine(
+        rateLimitWindowLabel('primary', usage.primaryWindowSeconds),
+        usage.primaryPercent,
+        usage.primaryResetAt,
+      )}\n`,
     );
     process.stdout.write(
-      `      ${formatLimitLine('Weekly limit', u.secondaryPercent, u.secondaryResetAt)}\n`,
+      `      ${formatLimitLine(
+        rateLimitWindowLabel('secondary', usage.secondaryWindowSeconds),
+        usage.secondaryPercent,
+        usage.secondaryResetAt,
+      )}\n`,
     );
   }
 
-  if (eligible.length > 1) {
-    process.stdout.write(`\n  ${dim}Enter number or 'all' to reset all eligible:${reset} `);
-  } else {
-    process.stdout.write(`\n  ${dim}Enter number:${reset} `);
-  }
-
-  const idx = await pickFromList('', hasCredits.length);
-  if (idx === -1) {
+  const selected = await pickFromList(
+    eligible.length > 1
+      ? `\n  ${dim}Enter number or 'all' to reset all eligible:${reset} `
+      : `\n  ${dim}Enter number:${reset} `,
+    hasCredits.length,
+    eligible.length > 1,
+  );
+  if (selected === -1) {
     process.stdout.write(`${gr('Cancelled.')}\n`);
     return;
   }
-
-  await executeReset(hasCredits[idx]!, options);
+  if (selected === 'all') {
+    await resetMany(eligible);
+    return;
+  }
+  await executeReset(hasCredits[selected]!, options);
 }

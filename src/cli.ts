@@ -10,7 +10,7 @@ import { resetCommand } from './commands/reset.js';
 import { CliError } from './utils/errors.js';
 import { b, dim, cy, g, y, reset } from './utils/colors.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 const HELP = `${b('codex-reset')} ${dim}v${VERSION}${reset}
 ${cy('Inspect and redeem Codex rate-limit reset credits from the command line')}
@@ -95,9 +95,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--all' || arg === '-a') {
       parsed.all = true;
     } else if (arg === '--no-color') {
-      // Handled by NO_COLOR env var convention, but we also accept the flag
-      // Colors module reads NO_COLOR at import time, so this is a no-op here.
-      // Users should use NO_COLOR=1 for reliable behavior.
+      // Colors checks process.argv during module initialization, so this flag
+      // is handled before command dispatch rather than as a later environment mutation.
     } else if (arg && !parsed.command && (arg === 'list' || arg === 'credits' || arg === 'reset')) {
       parsed.command = arg;
     } else if (arg && !parsed.command && !arg.startsWith('-') && !knownCommands.has(arg)) {

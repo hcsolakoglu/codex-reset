@@ -7,6 +7,7 @@
 const forceColor = process.env.FORCE_COLOR === '1' || process.env.FORCE_COLOR === 'true';
 const noColor =
   process.env.NO_COLOR !== undefined ||
+  process.argv.includes('--no-color') ||
   (!process.stdout.isTTY && !forceColor) ||
   (process.env.CI === 'true' && !forceColor);
 

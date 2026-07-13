@@ -12,6 +12,7 @@ import {
   truncate,
   pad,
   planBadge,
+  rateLimitWindowLabel,
 } from '../src/utils/format.ts';
 
 const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
@@ -84,6 +85,18 @@ describe('formatLimitLine', () => {
     assert.ok(line.startsWith('5h limit:'));
     assert.ok(line.includes('[████████████████████] 99% left'));
     assert.ok(line.includes('(resets'));
+  });
+
+  it('renders an unavailable row for a null backend window', () => {
+    const line = stripAnsi(formatLimitLine('Weekly limit', null, null));
+    assert.ok(line.includes('unavailable'));
+  });
+});
+
+describe('rateLimitWindowLabel', () => {
+  it('uses the backend duration instead of assuming primary is always 5h', () => {
+    assert.strictEqual(rateLimitWindowLabel('primary', 604800), 'Weekly limit');
+    assert.strictEqual(rateLimitWindowLabel('secondary', null), 'Secondary limit');
   });
 });
 

@@ -5,9 +5,15 @@
 
 import { discoverAccounts } from '../core/accounts.js';
 import type { Account } from '../core/types.js';
-import { getUsage } from '../core/api.js';
+import { getUsage, normalizeUsage } from '../core/api.js';
 import type { AccountUsage } from '../core/types.js';
-import { formatLimitLine, percentLeft, planBadge, truncate } from '../utils/format.js';
+import {
+  formatLimitLine,
+  percentLeft,
+  planBadge,
+  rateLimitWindowLabel,
+  truncate,
+} from '../utils/format.js';
 import { gr, g, y, r, cy, dim, bold, reset } from '../utils/colors.js';
 import { CliError } from '../utils/errors.js';
 
@@ -16,16 +22,7 @@ async function fetchAllUsage(accounts: Account[]): Promise<AccountUsage[]> {
   const results = await Promise.allSettled(
     accounts.map(async (account) => {
       const usage = await getUsage(account);
-      return {
-        account,
-        primaryPercent: usage.rate_limit.primary_window.used_percent,
-        secondaryPercent: usage.rate_limit.secondary_window.used_percent,
-        primaryResetAt: usage.rate_limit.primary_window.reset_at ?? null,
-        secondaryResetAt: usage.rate_limit.secondary_window.reset_at ?? null,
-        availableCredits: usage.rate_limit_reset_credits?.available_count ?? 0,
-        rateLimitReachedType: usage.rate_limit_reached_type?.type ?? null,
-        fetchedAt: Date.now(),
-      } satisfies AccountUsage;
+      return normalizeUsage(account, usage);
     }),
   );
 
@@ -56,12 +53,32 @@ async function fetchAllUsage(accounts: Account[]): Promise<AccountUsage[]> {
 
 function statusForUsage(u: AccountUsage): string {
   const statusParts: string[] = [];
-  if (u.secondaryPercent >= 100) statusParts.push(r('weekly exhausted'));
-  else if (u.primaryPercent >= 100) statusParts.push(r('5h exhausted'));
-  if (u.availableCredits > 0 && (u.secondaryPercent >= 80 || u.primaryPercent >= 80)) {
+  if (u.secondaryPercent !== null && u.secondaryPercent >= 100)
+    statusParts.push(
+      r(
+        `${rateLimitWindowLabel('secondary', u.secondaryWindowSeconds).replace(/ limit$/, '')} exhausted`,
+      ),
+    );
+  else if (u.primaryPercent !== null && u.primaryPercent >= 100)
+    statusParts.push(
+      r(
+        `${rateLimitWindowLabel('primary', u.primaryWindowSeconds).replace(/ limit$/, '')} exhausted`,
+      ),
+    );
+  if (
+    u.availableCredits > 0 &&
+    [u.secondaryPercent, u.primaryPercent].some((percent) => percent !== null && percent >= 80)
+  ) {
     statusParts.push(y('reset available'));
   }
+  if (u.primaryPercent === null && u.secondaryPercent === null)
+    statusParts.push(y('usage unavailable'));
   return statusParts.length > 0 ? statusParts.join(' ') : gr('ok');
+}
+
+function lowestPercentLeft(values: Array<number | null>): number | 'n/a' {
+  const available = values.filter((value): value is number => value !== null);
+  return available.length === 0 ? 'n/a' : Math.min(...available.map(percentLeft));
 }
 
 /** Render the list output (human-readable). */
@@ -83,23 +100,45 @@ function renderList(usages: AccountUsage[]): string {
     lines.push(
       `${num}  ${bold}${truncate(label, 28)}${reset}${emailSuffix}  ${plan}  ${credits}  ${statusForUsage(u)}`,
     );
-    lines.push(`    ${formatLimitLine('5h limit', u.primaryPercent, u.primaryResetAt)}`);
-    lines.push(`    ${formatLimitLine('Weekly limit', u.secondaryPercent, u.secondaryResetAt)}`);
+    lines.push(
+      `    ${formatLimitLine(
+        rateLimitWindowLabel('primary', u.primaryWindowSeconds),
+        u.primaryPercent,
+        u.primaryResetAt,
+      )}`,
+    );
+    lines.push(
+      `    ${formatLimitLine(
+        rateLimitWindowLabel('secondary', u.secondaryWindowSeconds),
+        u.secondaryPercent,
+        u.secondaryResetAt,
+      )}`,
+    );
     if (i !== usages.length - 1) lines.push('');
   }
 
   const totalCredits = usages.reduce((sum, u) => sum + u.availableCredits, 0);
   const exhausted = usages.filter(
-    (u) => u.primaryPercent >= 100 || u.secondaryPercent >= 100,
+    (u) =>
+      (u.primaryPercent !== null && u.primaryPercent >= 100) ||
+      (u.secondaryPercent !== null && u.secondaryPercent >= 100),
   ).length;
-  const lowest5h =
-    usages.length === 0 ? 0 : Math.min(...usages.map((u) => percentLeft(u.primaryPercent)));
-  const lowestWeekly =
-    usages.length === 0 ? 0 : Math.min(...usages.map((u) => percentLeft(u.secondaryPercent)));
+  const lowest5h = lowestPercentLeft(usages.map((u) => u.primaryPercent));
+  const lowestWeekly = lowestPercentLeft(usages.map((u) => u.secondaryPercent));
+  const primaryWindow = usages.find((u) => u.primaryPercent !== null);
+  const secondaryWindow = usages.find((u) => u.secondaryPercent !== null);
+  const primarySummaryLabel = rateLimitWindowLabel(
+    'primary',
+    primaryWindow?.primaryWindowSeconds ?? null,
+  ).replace(/ limit$/, '');
+  const secondarySummaryLabel = rateLimitWindowLabel(
+    'secondary',
+    secondaryWindow?.secondaryWindowSeconds ?? null,
+  ).replace(/ limit$/, '');
 
   lines.push('');
   lines.push(
-    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: 5h ${lowest5h}%, weekly ${lowestWeekly}%${reset}`,
+    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: ${primarySummaryLabel} ${lowest5h}%, ${secondarySummaryLabel} ${lowestWeekly}%${reset}`,
   );
 
   if (totalCredits > 0 && exhausted > 0) {
@@ -131,12 +170,14 @@ export async function listCommand(options: { json: boolean }): Promise<void> {
       usage: {
         primary: {
           percentUsed: u.primaryPercent,
-          percentLeft: percentLeft(u.primaryPercent),
+          percentLeft: u.primaryPercent === null ? null : percentLeft(u.primaryPercent),
+          windowSeconds: u.primaryWindowSeconds,
           resetsAt: u.primaryResetAt,
         },
         secondary: {
           percentUsed: u.secondaryPercent,
-          percentLeft: percentLeft(u.secondaryPercent),
+          percentLeft: u.secondaryPercent === null ? null : percentLeft(u.secondaryPercent),
+          windowSeconds: u.secondaryWindowSeconds,
           resetsAt: u.secondaryResetAt,
         },
       },

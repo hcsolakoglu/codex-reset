@@ -186,9 +186,11 @@ export async function discoverAccounts(codexHome = resolveCodexHome()): Promise<
 /** Find a single account by fuzzy query (email, alias, account_id prefix, or index). */
 export function findAccount(accounts: Account[], query: string): Account | undefined {
   // Try index (1-based)
-  const idx = parseInt(query, 10);
-  if (!isNaN(idx) && idx >= 1 && idx <= accounts.length) {
-    return accounts[idx - 1];
+  if (/^[1-9]\d*$/.test(query)) {
+    const idx = Number(query);
+    if (Number.isSafeInteger(idx) && idx <= accounts.length) {
+      return accounts[idx - 1];
+    }
   }
 
   const q = query.toLowerCase();
@@ -196,7 +198,7 @@ export function findAccount(accounts: Account[], query: string): Account | undef
     if (
       acct.email.toLowerCase() === q ||
       acct.alias?.toLowerCase() === q ||
-      acct.accountId.startsWith(q) ||
+      acct.accountId.toLowerCase().startsWith(q) ||
       acct.accountName?.toLowerCase() === q
     ) {
       return acct;

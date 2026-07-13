@@ -64,14 +64,18 @@ function renderCredits(allCredits: AccountCredits[]): string {
     }
 
     // Sort by expiry (soonest first)
-    const sorted = [...available].sort(
-      (a, b) => new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime(),
-    );
+    const sorted = [...available].sort((a, b) => {
+      const expiresA = a.expires_at;
+      const expiresB = b.expires_at;
+      if (expiresA === null) return expiresB === null ? 0 : 1;
+      if (expiresB === null) return -1;
+      return new Date(expiresA).getTime() - new Date(expiresB).getTime();
+    });
 
     for (const credit of sorted) {
       const id = credit.id.replace('RateLimitResetCredit_', '').slice(0, 12);
       const granted = formatDate(credit.granted_at);
-      const expires = formatDate(credit.expires_at);
+      const expires = credit.expires_at === null ? 'no expiry' : formatDate(credit.expires_at);
       const countdown = formatCountdown(credit.expires_at);
 
       lines.push(
@@ -110,13 +114,22 @@ export async function creditsCommand(options: { json: boolean }): Promise<void> 
       accountId: ac.account.accountId,
       credits: ac.credits
         .filter((c) => c.status === 'available')
-        .sort((a, b) => new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime())
+        .sort((a, b) => {
+          const expiresA = a.expires_at;
+          const expiresB = b.expires_at;
+          if (expiresA === null) return expiresB === null ? 0 : 1;
+          if (expiresB === null) return -1;
+          return new Date(expiresA).getTime() - new Date(expiresB).getTime();
+        })
         .map((c) => ({
           id: c.id,
           status: c.status,
           grantedAt: c.granted_at,
           expiresAt: c.expires_at,
-          daysLeft: Math.ceil((new Date(c.expires_at).getTime() - Date.now()) / 86_400_000),
+          daysLeft:
+            c.expires_at === null
+              ? null
+              : Math.ceil((new Date(c.expires_at).getTime() - Date.now()) / 86_400_000),
         })),
     }));
     process.stdout.write(JSON.stringify(output, null, 2) + '\n');

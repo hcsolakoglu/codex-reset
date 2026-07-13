@@ -4,7 +4,7 @@
  * @module utils/format
  */
 
-import { g, y, r, gr, cy, green, yellow, red, gray, reset } from './colors.js';
+import { g, y, r, gr, cy, dim, green, yellow, red, gray, reset } from './colors.js';
 
 const DEFAULT_LIMIT_BAR_WIDTH = 20;
 
@@ -90,17 +90,32 @@ export function formatResetTime(unix: number | null, now = new Date()): string |
 /** Render a full Codex CLI-style limit row. */
 export function formatLimitLine(
   label: string,
-  usedPercent: number,
+  usedPercent: number | null,
   resetAt: number | null,
   labelWidth = 22,
 ): string {
+  if (usedPercent === null) {
+    return `${pad(`${label}:`, labelWidth)} unavailable`;
+  }
   const resetTime = formatResetTime(resetAt);
   const suffix = resetTime ? ` (resets ${resetTime})` : '';
   return `${pad(`${label}:`, labelWidth)} ${formatLimitBar(usedPercent)}${suffix}`;
 }
 
+/** Map Codex's window duration to the same labels used by its TUI. */
+export function rateLimitWindowLabel(
+  kind: 'primary' | 'secondary',
+  windowSeconds: number | null,
+): string {
+  if (windowSeconds === 18_000) return '5h limit';
+  if (windowSeconds === 604_800) return 'Weekly limit';
+  if (windowSeconds === 2_592_000) return 'Monthly limit';
+  return kind === 'primary' ? 'Primary limit' : 'Secondary limit';
+}
+
 /** Human-readable countdown from now to a target ISO date. */
-export function formatCountdown(iso: string): string {
+export function formatCountdown(iso: string | null): string {
+  if (iso === null) return `${dim}no expiry${reset}`;
   const target = new Date(iso).getTime();
   const now = Date.now();
   const diffMs = target - now;

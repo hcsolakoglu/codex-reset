@@ -43,7 +43,7 @@ codex-reset list
 # Check available credits with expiry dates
 codex-reset credits
 
-# Reset an account (interactive picker)
+# Reset an account (interactive picker; selects a specific credit when available)
 codex-reset reset
 
 # Reset all exhausted accounts, no prompts
@@ -82,7 +82,9 @@ Shows individual credits with grant date, expiry date, and countdown.
 
 ### `codex-reset reset [query]`
 
-Consumes a reset credit to clear your 5h and 7d rate-limit windows.
+Consumes a reset credit to clear the usage window(s) reported by the backend.
+Some plans expose only one window, and reset scope can be weekly, five-hour,
+monthly, or another backend-defined scope.
 
 ```bash
 codex-reset reset              # interactive picker
@@ -90,7 +92,11 @@ codex-reset reset 2            # by list index
 codex-reset reset me@example.com # by email
 codex-reset reset --all        # reset all eligible accounts
 codex-reset reset --all --yes  # no confirmation prompt
+codex-reset reset --json --yes # confirmed non-interactive JSON mode
 ```
+
+`--json` never confirms a destructive operation by itself. Passing `--json`
+without `--yes` exits safely before any network request or consume request.
 
 Output shows before/after comparison:
 
@@ -116,9 +122,9 @@ Output shows before/after comparison:
 ## How it works
 
 1. **Account discovery**: Reads codex-auth multi-account files and falls back to official Codex CLI/Desktop `auth.json`
-2. **Usage check**: Calls `GET /backend-api/wham/usage` to fetch current rate-limit windows
-3. **Credit listing**: Calls `GET /backend-api/wham/rate-limit-reset-credits` to list individual credits
-4. **Credit consumption**: Calls `POST /backend-api/wham/rate-limit-reset-credits/consume` with a UUID `redeem_request_id`
+2. **Usage check**: Calls `GET /backend-api/wham/usage` to fetch current rate-limit windows; missing windows are displayed as unavailable
+3. **Credit listing**: Calls `GET /backend-api/wham/rate-limit-reset-credits` to list individual credits, expiry, and reset scope
+4. **Credit consumption**: Calls `POST /backend-api/wham/rate-limit-reset-credits/consume` with a UUID `redeem_request_id` and the selected `credit_id` when the backend provides one
 
 All requests use HTTPS with your existing OAuth access token. No credentials are stored or logged.
 

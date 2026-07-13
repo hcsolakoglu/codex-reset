@@ -19,33 +19,33 @@ export interface AuthFile {
   last_refresh: string;
 }
 
-/** A single rate-limit window (5h or 7d). */
+/** A single rate-limit window. Codex may omit either window for some plans. */
 export interface UsageWindow {
   used_percent: number;
-  limit_window_seconds?: number;
-  reset_after_seconds?: number;
-  reset_at?: number;
+  limit_window_seconds?: number | null;
+  reset_after_seconds?: number | null;
+  reset_at?: number | null;
 }
 
 /** GET /wham/usage response. */
 export interface UsageResponse {
-  user_id: string;
-  account_id: string;
-  email: string;
-  plan_type: string;
-  rate_limit: {
-    allowed: boolean;
-    limit_reached: boolean;
-    primary_window: UsageWindow;
-    secondary_window: UsageWindow;
-  };
+  user_id?: string;
+  account_id?: string;
+  email?: string;
+  plan_type?: string;
+  rate_limit?: {
+    allowed?: boolean;
+    limit_reached?: boolean;
+    primary_window?: UsageWindow | null;
+    secondary_window?: UsageWindow | null;
+  } | null;
   rate_limit_reset_credits?: {
-    available_count: number;
-  };
+    available_count?: number | null;
+  } | null;
   rate_limit_reached_type?: {
-    type: string;
-    details: string | null;
-  };
+    type?: string | null;
+    details?: string | null;
+  } | null;
 }
 
 /** Individual reset credit from GET /wham/rate-limit-reset-credits. */
@@ -54,31 +54,32 @@ export interface ResetCredit {
   reset_type: string;
   status: string;
   granted_at: string;
-  expires_at: string;
-  redeemed_at: string | null;
-  profile_image_url: string | null;
-  profile_user_id: string | null;
-  title: string | null;
-  description: string | null;
+  expires_at: string | null;
+  redeemed_at?: string | null;
+  profile_image_url?: string | null;
+  profile_user_id?: string | null;
+  title?: string | null;
+  description?: string | null;
 }
 
 /** GET /wham/rate-limit-reset-credits response. */
 export interface CreditsResponse {
   credits: ResetCredit[];
+  available_count?: number;
 }
 
 /** POST /wham/rate-limit-reset-credits/consume response. */
 export interface ConsumeResponse {
   code: 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed';
-  credit: {
+  windows_reset?: number;
+  credit?: {
     id: string;
     reset_type: string;
     status: string;
     granted_at: string;
-    expires_at: string;
-    redeemed_at: string;
+    expires_at: string | null;
+    redeemed_at?: string | null;
   };
-  windows_reset: number;
 }
 
 /** A discovered account ready for API calls. */
@@ -91,11 +92,13 @@ export interface Account {
   accountName: string | null;
 }
 
-/** Normalized usage snapshot for display. */
+/** Normalized usage snapshot for display. `null` means the backend did not report that window. */
 export interface AccountUsage {
   account: Account;
-  primaryPercent: number;
-  secondaryPercent: number;
+  primaryPercent: number | null;
+  secondaryPercent: number | null;
+  primaryWindowSeconds: number | null;
+  secondaryWindowSeconds: number | null;
   primaryResetAt: number | null;
   secondaryResetAt: number | null;
   availableCredits: number;

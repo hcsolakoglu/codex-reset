@@ -208,6 +208,10 @@ describe('findAccount', () => {
     assert.strictEqual(result?.email, 'alice@example.com');
   });
 
+  it('returns undefined for a malformed numeric query instead of truncating it', () => {
+    assert.equal(findAccount(accounts, '2abc'), undefined);
+  });
+
   it('returns undefined for no match', () => {
     const result = findAccount(accounts, 'nonexistent');
     assert.strictEqual(result, undefined);
