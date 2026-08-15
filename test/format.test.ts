@@ -168,6 +168,20 @@ describe('planDisplayName', () => {
     assert.strictEqual(planDisplayName('prolite'), 'Pro Lite');
     assert.strictEqual(planDisplayName('custom_plan'), 'Custom Plan');
   });
+
+  it('uses official upstream names for enterprise-tier plans', () => {
+    assert.strictEqual(planDisplayName('ent26'), 'Enterprise');
+    assert.strictEqual(planDisplayName('enterprise_cbp_automation'), 'Enterprise (Automation)');
+    assert.strictEqual(planDisplayName('enterprise_cbp_usage_based'), 'Enterprise CBP Usage Based');
+    assert.strictEqual(planDisplayName('self_serve_business_prolite'), 'Self Serve Business ProLite');
+    assert.strictEqual(planDisplayName('education'), 'Edu');
+    assert.strictEqual(planDisplayName('hc'), 'Enterprise');
+  });
+
+  it('falls back to title-casing for values upstream has not catalogued', () => {
+    assert.strictEqual(planDisplayName('brand_new_tier'), 'Brand New Tier');
+    assert.strictEqual(planDisplayName('  plus  '), 'Plus');
+  });
 });
 
 describe('planBadge', () => {

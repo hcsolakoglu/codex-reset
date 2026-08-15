@@ -156,28 +156,39 @@ export function pad(str: string, width: number): string {
   return str + ' '.repeat(width - str.length);
 }
 
-/** Convert backend plan strings to readable labels without hard-coding account classes. */
+/**
+ * Official upstream display names per raw plan value, from
+ * codex-rs/protocol/src/auth.rs `KnownPlan::display_name()`.
+ */
+const PLAN_DISPLAY_NAMES: Record<string, string> = {
+  free: 'Free',
+  go: 'Go',
+  plus: 'Plus',
+  pro: 'Pro',
+  prolite: 'Pro Lite',
+  team: 'Team',
+  self_serve_business_prolite: 'Self Serve Business ProLite',
+  self_serve_business_usage_based: 'Self Serve Business Usage Based',
+  business: 'Business',
+  ent26: 'Enterprise',
+  enterprise: 'Enterprise',
+  hc: 'Enterprise',
+  enterprise_cbp_automation: 'Enterprise (Automation)',
+  enterprise_cbp_usage_based: 'Enterprise CBP Usage Based',
+  edu: 'Edu',
+  education: 'Edu',
+};
+
+/** Convert backend plan strings to official Codex display names; unknown values fall back to title-casing. */
 export function planDisplayName(plan: string): string {
   const normalized = plan.trim().toLowerCase();
-  switch (normalized) {
-    case 'free':
-      return 'Free';
-    case 'go':
-      return 'Go';
-    case 'plus':
-      return 'Plus';
-    case 'pro':
-      return 'Pro';
-    case 'prolite':
-    case 'pro_lite':
-      return 'Pro Lite';
-    default:
-      return normalized
-        .split(/[_\s-]+/)
-        .filter(Boolean)
-        .map((part) => part[0]!.toUpperCase() + part.slice(1))
-        .join(' ');
-  }
+  const known = PLAN_DISPLAY_NAMES[normalized];
+  if (known) return known;
+  return normalized
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 /** Plan type to colored badge. */

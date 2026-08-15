@@ -10,6 +10,12 @@
  * Also checks {codex_home}/auth.json directly for CLI-only users
  * (no codex-auth installed — single account mode).
  *
+ * Auth-mode policy (mirrors upstream AuthMode::has_chatgpt_account()):
+ *   - chatgpt (OAuth tokens)       → discovered via id_token claims
+ *   - personalAccessToken          → discovered after whoami hydration
+ *   - apikey / agentIdentity /
+ *     bedrockApiKey / token-less   → skipped with a stderr warning
+ *
  * @module core/accounts
  */
 
@@ -17,6 +23,8 @@ import { access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Account, AuthFile } from './types.js';
+import { decodeJwtPayload } from './jwt.js';
+import { fetchPatMetadata } from './auth.js';
 
 /** Resolve the Codex home directory across platforms. */
 export function resolveCodexHome(): string {
@@ -49,37 +57,60 @@ interface RegistryAccount {
   email: string;
   alias: string;
   account_name: string | null;
-  plan: string;
+  plan: string | null;
 }
 
 interface Registry {
   accounts: RegistryAccount[];
 }
 
-/** Decode the payload section of a JWT (base64url → JSON). */
-export function decodeJwtPayload(token: string): Record<string, unknown> {
-  const parts = token.split('.');
-  if (parts.length < 2) return {};
-  try {
-    const decoded = Buffer.from(parts[1]!, 'base64url').toString('utf-8');
-    return JSON.parse(decoded);
-  } catch {
-    return {};
-  }
-}
+export { decodeJwtPayload };
 
-/** Extract email and account_id from an auth file via JWT id_token claims. */
-export function extractIdentity(auth: AuthFile): {
+/** Identity extracted from an auth file via JWT id_token claims. */
+export interface Identity {
   email: string | null;
   accountId: string | null;
   planType: string | null;
-} {
-  const claims = decodeJwtPayload(auth.tokens.id_token);
-  const email = (claims.email as string) || null;
+  isFedramp: boolean;
+}
+
+/** Extract identity from an OAuth auth file via JWT id_token claims. */
+export function extractIdentity(auth: AuthFile): Identity {
+  const idToken = auth.tokens?.id_token;
+  const claims = typeof idToken === 'string' ? decodeJwtPayload(idToken) : {};
   const authClaims = claims['https://api.openai.com/auth'] as Record<string, unknown> | undefined;
-  const accountId = (authClaims?.chatgpt_account_id as string) || auth.tokens.account_id || null;
-  const planType = (authClaims?.chatgpt_plan_type as string) || null;
-  return { email, accountId, planType };
+  const profileClaims = claims['https://api.openai.com/profile'] as Record<string, unknown> | undefined;
+
+  const email =
+    (typeof claims.email === 'string' && claims.email) ||
+    (typeof profileClaims?.email === 'string' && profileClaims.email) ||
+    null;
+
+  // Upstream precedence (login/src/auth/manager.rs): tokens.account_id (a
+  // forced workspace override) wins over the id_token claim. The default
+  // organization id is a last-resort discovery fallback used by the codex-auth
+  // producer; upstream request auth never substitutes it.
+  const accountId =
+    auth.tokens?.account_id ||
+    (typeof authClaims?.chatgpt_account_id === 'string' && authClaims.chatgpt_account_id) ||
+    organizationAccountId(authClaims) ||
+    null;
+
+  const planType = (typeof authClaims?.chatgpt_plan_type === 'string' && authClaims.chatgpt_plan_type) || null;
+  const isFedramp = authClaims?.chatgpt_account_is_fedramp === true;
+
+  return { email, accountId, planType, isFedramp };
+}
+
+/** Fallback the producer also accepts: default (or first) organization id. */
+function organizationAccountId(authClaims: Record<string, unknown> | undefined): string | null {
+  const orgs = authClaims?.organizations;
+  if (!Array.isArray(orgs)) return null;
+  const records = orgs.filter(
+    (org): org is Record<string, unknown> => typeof org === 'object' && org !== null,
+  );
+  const preferred = records.find((org) => org.is_default === true) ?? records[0];
+  return typeof preferred?.id === 'string' ? preferred.id : null;
 }
 
 /** Build a map of account_id → registry metadata for quick lookup. */
@@ -107,6 +138,104 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/** Non-fatal discovery note; stderr keeps `--json` stdout machine-readable. */
+function warn(message: string): void {
+  process.stderr.write(`! ${message}\n`);
+}
+
+function registryMetaFor(
+  registry: Map<string, RegistryAccount>,
+  accountId: string,
+): Partial<Pick<RegistryAccount, 'email' | 'alias' | 'account_name' | 'plan'>> {
+  const meta = registry.get(accountId);
+  return {
+    email: meta?.email,
+    alias: meta?.alias,
+    account_name: meta?.account_name,
+    plan: meta?.plan,
+  };
+}
+
+function buildAccount(
+  authFile: AuthFile,
+  filepath: string | null,
+  identity: Identity,
+  registry: Map<string, RegistryAccount>,
+): Account {
+  const meta = registryMetaFor(registry, identity.accountId!);
+  return {
+    email: identity.email || meta.email || 'unknown',
+    planType: identity.planType || meta.plan || 'unknown',
+    accountId: identity.accountId!,
+    authFile,
+    // The producer stores "" for "no alias" — normalize to null.
+    alias: meta.alias ? meta.alias : null,
+    accountName: meta.account_name ?? null,
+    filepath,
+    isFedramp: identity.isFedramp,
+    authMode: authFile.auth_mode ?? null,
+  };
+}
+
+/** Load one auth file into an Account, or explain why it was skipped. */
+async function loadAuthFile(
+  authFile: AuthFile,
+  filepath: string | null,
+  registry: Map<string, RegistryAccount>,
+  label: string,
+): Promise<Account | null> {
+  // ChatGPT OAuth: identity comes from the id_token JWT.
+  if (authFile.tokens?.id_token) {
+    const identity = extractIdentity(authFile);
+    if (!identity.accountId) {
+      warn(`${label}: no ChatGPT account id in token claims — skipping`);
+      return null;
+    }
+    return buildAccount(authFile, filepath, identity, registry);
+  }
+
+  // Personal access token: a real ChatGPT account per upstream
+  // AuthMode::has_chatgpt_account(), hydrated via the whoami endpoint.
+  if (typeof authFile.personal_access_token === 'string' && authFile.personal_access_token.length > 0) {
+    try {
+      const metadata = await fetchPatMetadata(authFile.personal_access_token);
+      return buildAccount(
+        authFile,
+        filepath,
+        {
+          email: metadata.email,
+          accountId: metadata.chatgpt_account_id,
+          planType: metadata.chatgpt_plan_type,
+          isFedramp: metadata.chatgpt_account_is_fedramp,
+        },
+        registry,
+      );
+    } catch (err) {
+      warn(
+        `${label}: personal access token could not be verified (${
+          err instanceof Error ? err.message : String(err)
+        }) — skipping`,
+      );
+      return null;
+    }
+  }
+
+  if (authFile.bedrock_api_key) {
+    warn(`${label}: Bedrock API-key accounts have no ChatGPT rate limits — skipping`);
+    return null;
+  }
+  if (authFile.agent_identity) {
+    warn(`${label}: agent-identity accounts have no ChatGPT rate limits — skipping`);
+    return null;
+  }
+  if (authFile.OPENAI_API_KEY) {
+    warn(`${label}: API-key accounts have no ChatGPT rate limits — skipping`);
+    return null;
+  }
+  warn(`${label}: auth file has no usable credentials — skipping`);
+  return null;
+}
+
 /** Try to load a single auth.json file (for CLI-only users without codex-auth). */
 async function tryLoadLiveAuth(codexHome: string): Promise<Account | null> {
   const liveAuthPath = join(codexHome, 'auth.json');
@@ -114,16 +243,7 @@ async function tryLoadLiveAuth(codexHome: string): Promise<Account | null> {
     if (!(await fileExists(liveAuthPath))) return null;
     const content = await readFile(liveAuthPath, 'utf-8');
     const authFile = JSON.parse(content) as AuthFile;
-    const { email, accountId, planType } = extractIdentity(authFile);
-    if (!accountId) return null;
-    return {
-      email: email || 'unknown',
-      planType: planType || 'unknown',
-      accountId,
-      authFile,
-      alias: null,
-      accountName: null,
-    };
+    return await loadAuthFile(authFile, liveAuthPath, new Map(), liveAuthPath);
   } catch {
     return null;
   }
@@ -150,23 +270,15 @@ export async function discoverAccounts(codexHome = resolveCodexHome()): Promise<
     try {
       const content = await readFile(filepath, 'utf-8');
       const authFile = JSON.parse(content) as AuthFile;
-      const { email, accountId, planType } = extractIdentity(authFile);
-      if (!accountId) continue;
+      const account = await loadAuthFile(authFile, filepath, registry, filename);
+      if (!account) continue;
 
       // Dedupe by email:account_id (same user can have multiple account entries)
-      const key = `${email}:${accountId}`;
+      const key = `${account.email}:${account.accountId}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const regMeta = registry.get(accountId);
-      accounts.push({
-        email: email || regMeta?.email || 'unknown',
-        planType: planType || regMeta?.plan || 'unknown',
-        accountId,
-        authFile,
-        alias: regMeta?.alias || null,
-        accountName: regMeta?.account_name || null,
-      });
+      accounts.push(account);
     } catch {
       // Skip unreadable / invalid auth files
     }

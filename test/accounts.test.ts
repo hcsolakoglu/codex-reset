@@ -1,8 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
 import {
   decodeJwtPayload,
   discoverAccounts,
@@ -10,7 +10,20 @@ import {
   findAccount,
   resolveCodexHome,
 } from '../src/core/accounts.ts';
+import { setHttpTransport } from '../src/core/http.ts';
+import type { TransportResponse } from '../src/core/http.ts';
 import type { Account, AuthFile } from '../src/core/types.ts';
+import {
+  captureOutput,
+  fakeTransport,
+  jsonResponse,
+  oauthAuthFile,
+  patAuthFile,
+  withTempCodexHome,
+} from './helpers.ts';
+
+// Never let one test's injected transport leak into the next on failure.
+afterEach(() => setHttpTransport(null));
 
 // A minimal JWT with email and auth claims for testing
 function makeJwt(claims: Record<string, unknown>): string {
@@ -41,15 +54,6 @@ const testAuthFile: AuthFile = {
   },
   last_refresh: '2026-06-22T00:00:00Z',
 };
-
-async function withTempCodexHome<T>(fn: (codexHome: string) => Promise<T>): Promise<T> {
-  const codexHome = await mkdtemp(join(tmpdir(), 'codex-reset-test-'));
-  try {
-    return await fn(codexHome);
-  } finally {
-    await rm(codexHome, { recursive: true, force: true });
-  }
-}
 
 describe('decodeJwtPayload', () => {
   it('decodes a valid JWT', () => {
@@ -116,7 +120,7 @@ describe('resolveCodexHome', () => {
 
 describe('discoverAccounts', () => {
   it('loads codex-auth managed accounts and registry metadata', async () => {
-    await withTempCodexHome(async (codexHome) => {
+    await withTempCodexHome({}, async (codexHome) => {
       const accountsDir = join(codexHome, 'accounts');
       await mkdir(accountsDir, { recursive: true });
       await writeFile(join(accountsDir, 'acct.auth.json'), JSON.stringify(testAuthFile));
@@ -149,7 +153,7 @@ describe('discoverAccounts', () => {
   });
 
   it('falls back to live auth.json when accounts directory is absent', async () => {
-    await withTempCodexHome(async (codexHome) => {
+    await withTempCodexHome({}, async (codexHome) => {
       await writeFile(join(codexHome, 'auth.json'), JSON.stringify(testAuthFile));
 
       const accounts = await discoverAccounts(codexHome);
@@ -215,5 +219,235 @@ describe('findAccount', () => {
   it('returns undefined for no match', () => {
     const result = findAccount(accounts, 'nonexistent');
     assert.strictEqual(result, undefined);
+  });
+});
+
+describe('auth-mode fixture matrix', () => {
+  // A transport that fails the test if any non-PAT mode touches the network.
+  function offlineTransport() {
+    const { transport } = fakeTransport(() => {
+      throw new Error('network must not be used in offline discovery modes');
+    });
+    setHttpTransport(transport);
+  }
+
+  it('discovers a personal access token account via whoami hydration', async () => {
+    const { transport, requests } = fakeTransport(
+      (req): TransportResponse => {
+        assert.equal(req.hostname, 'auth.openai.com');
+        assert.equal(req.path, '/api/accounts/v1/user-auth-credential/whoami');
+        return jsonResponse(200, {
+          email: 'pat-user@example.com',
+          chatgpt_user_id: 'user-pat',
+          chatgpt_account_id: 'acct-pat',
+          chatgpt_plan_type: 'pro',
+          chatgpt_account_is_fedramp: true,
+        });
+      },
+    );
+    setHttpTransport(transport);
+
+    await withTempCodexHome(
+      { 'accounts/pat.auth.json': JSON.stringify(patAuthFile('pat-token-1')) },
+      async () => {
+        const accounts = await discoverAccounts();
+        assert.equal(accounts.length, 1);
+        const acct = accounts[0]!;
+        assert.equal(acct.email, 'pat-user@example.com');
+        assert.equal(acct.accountId, 'acct-pat');
+        assert.equal(acct.planType, 'pro');
+        assert.equal(acct.isFedramp, true);
+        assert.equal(acct.authMode, 'personalAccessToken');
+        assert.equal(requests[0]!.headers['Authorization'], 'Bearer pat-token-1');
+      },
+    );
+    setHttpTransport(null);
+  });
+
+  it('skips a PAT account whose whoami lookup fails, with a warning', async () => {
+    const { transport } = fakeTransport(() => jsonResponse(403, {}));
+    setHttpTransport(transport);
+    const { stderr } = await captureOutput(async () => {
+      const accounts = await withTempCodexHome(
+        { 'accounts/pat.auth.json': JSON.stringify(patAuthFile()) },
+        () => discoverAccounts(),
+      );
+      assert.equal(accounts.length, 0);
+    });
+    assert.match(stderr, /personal access token could not be verified/);
+    setHttpTransport(null);
+  });
+
+  it('skips API-key accounts with a warning and no network calls', async () => {
+    offlineTransport();
+    const { stderr } = await captureOutput(async () => {
+      const accounts = await withTempCodexHome(
+        {
+          'accounts/sk.auth.json': JSON.stringify({
+            auth_mode: 'apikey',
+            OPENAI_API_KEY: 'sk-test',
+          }),
+        },
+        () => discoverAccounts(),
+      );
+      assert.equal(accounts.length, 0);
+    });
+    assert.match(stderr, /API-key accounts/);
+    setHttpTransport(null);
+  });
+
+  it('skips agent-identity accounts with a warning', async () => {
+    offlineTransport();
+    const { stderr } = await captureOutput(async () => {
+      const accounts = await withTempCodexHome(
+        {
+          'accounts/agent.auth.json': JSON.stringify({
+            auth_mode: 'agentIdentity',
+            agent_identity: 'agent-jwt',
+          }),
+        },
+        () => discoverAccounts(),
+      );
+      assert.equal(accounts.length, 0);
+    });
+    assert.match(stderr, /agent-identity/);
+    setHttpTransport(null);
+  });
+
+  it('skips Bedrock accounts with a warning', async () => {
+    offlineTransport();
+    const { stderr } = await captureOutput(async () => {
+      const accounts = await withTempCodexHome(
+        {
+          'accounts/bedrock.auth.json': JSON.stringify({
+            auth_mode: 'bedrockApiKey',
+            bedrock_api_key: { region: 'us-east-1' },
+          }),
+        },
+        () => discoverAccounts(),
+      );
+      assert.equal(accounts.length, 0);
+    });
+    assert.match(stderr, /Bedrock/);
+    setHttpTransport(null);
+  });
+
+  it('skips a token-less credential-free file without crashing', async () => {
+    offlineTransport();
+    const { stderr } = await captureOutput(async () => {
+      const accounts = await withTempCodexHome(
+        { 'accounts/empty.auth.json': JSON.stringify({ auth_mode: 'chatgpt' }) },
+        () => discoverAccounts(),
+      );
+      assert.equal(accounts.length, 0);
+    });
+    assert.match(stderr, /no usable credentials/);
+    setHttpTransport(null);
+  });
+
+  it('carries the FedRAMP claim onto the account', async () => {
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      { 'accounts/fed.auth.json': JSON.stringify(oauthAuthFile({ fedramp: true })) },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts[0]?.isFedramp, true);
+    setHttpTransport(null);
+  });
+
+  it('still discovers an account whose access token is expired (refresh is reactive)', async () => {
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      { 'accounts/exp.auth.json': JSON.stringify(oauthAuthFile({ accessExp: 1_000_000_000 })) },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts.length, 1);
+    setHttpTransport(null);
+  });
+
+  it('falls back to the profile.email claim when top-level email is absent', async () => {
+    const authFile = oauthAuthFile();
+    const claims = decodeJwtPayload(authFile.tokens!.id_token);
+    delete claims.email!;
+    claims['https://api.openai.com/profile'] = { email: 'profile@example.com' };
+    const idToken = `${authFile.tokens!.id_token.split('.')[0]}.${Buffer.from(
+      JSON.stringify(claims),
+    ).toString('base64url')}.sig`;
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      {
+        'accounts/prof.auth.json': JSON.stringify({
+          ...authFile,
+          tokens: { ...authFile.tokens!, id_token: idToken },
+        }),
+      },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts[0]?.email, 'profile@example.com');
+    setHttpTransport(null);
+  });
+
+  it('falls back to the default organization id when the account-id claim is absent', async () => {
+    const authFile = oauthAuthFile();
+    const claims = decodeJwtPayload(authFile.tokens!.id_token);
+    const auth = claims['https://api.openai.com/auth'] as Record<string, unknown>;
+    delete auth.chatgpt_account_id;
+    auth.organizations = [{ id: 'org-2' }, { id: 'org-1', is_default: true }];
+    const idToken = `${authFile.tokens!.id_token.split('.')[0]}.${Buffer.from(
+      JSON.stringify(claims),
+    ).toString('base64url')}.sig`;
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      {
+        'accounts/org.auth.json': JSON.stringify({
+          ...authFile,
+          tokens: { ...authFile.tokens!, id_token: idToken, account_id: null },
+        }),
+      },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts[0]?.accountId, 'org-1');
+    setHttpTransport(null);
+  });
+
+  it('prefers tokens.account_id over the claim, matching upstream request auth', async () => {
+    const authFile = oauthAuthFile(); // claim says acct-123
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      {
+        'accounts/forced.auth.json': JSON.stringify({
+          ...authFile,
+          tokens: { ...authFile.tokens!, account_id: 'forced-workspace-9' },
+        }),
+      },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts[0]?.accountId, 'forced-workspace-9');
+    setHttpTransport(null);
+  });
+
+  it('normalizes an empty-string registry alias to null', async () => {
+    offlineTransport();
+    const accounts = await withTempCodexHome(
+      {
+        'accounts/acct.auth.json': JSON.stringify(oauthAuthFile()),
+        'accounts/registry.json': JSON.stringify({
+          accounts: [
+            {
+              account_key: 'user-456::acct-123',
+              chatgpt_account_id: 'acct-123',
+              chatgpt_user_id: 'user-456',
+              email: 'test@example.com',
+              alias: '',
+              account_name: null,
+              plan: null,
+            },
+          ],
+        }),
+      },
+      () => discoverAccounts(),
+    );
+    assert.equal(accounts[0]?.alias, null);
+    setHttpTransport(null);
   });
 });
