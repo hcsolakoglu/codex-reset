@@ -2,9 +2,11 @@
 
 # codex-reset
 
-**Inspect and redeem Codex rate-limit reset credits from the command line**
+**Inspect and redeem OpenAI Codex rate-limit reset credits from the command line — multi-account usage bars, credit expiry, idempotent resets, JSON output**
 
 [![npm](https://img.shields.io/npm/v/codex-reset.svg)](https://www.npmjs.com/package/codex-reset)
+[![npm downloads](https://img.shields.io/npm/dm/codex-reset.svg)](https://www.npmjs.com/package/codex-reset)
+[![CI](https://github.com/hcsolakoglu/codex-reset/actions/workflows/ci.yml/badge.svg)](https://github.com/hcsolakoglu/codex-reset/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/node/v/codex-reset.svg)](https://nodejs.org)
 
@@ -14,13 +16,40 @@
 
 ## What it does
 
-OpenAI may expose rate-limit reset credits for Codex accounts. `codex-reset`
-lists those credits, shows current usage windows, and redeems a credit when the
-backend says one is available.
+OpenAI grants some Codex accounts **rate-limit reset credits** — one-shot
+credits that clear your usage windows when you hit the ChatGPT plan limits for
+Codex. `codex-reset` makes those credits visible and redeemable from the
+terminal:
+
+- **`list`** — every account with live usage bars (5h / daily / weekly /
+  monthly windows, labeled from what the backend actually reports), remaining
+  capacity, and reset-credit counts
+- **`credits`** — individual credits with grant dates, expiry dates, and
+  countdowns, so nothing expires unused
+- **`reset`** — redeem a credit interactively, by account, or in batch, with
+  before/after usage comparison
+
+Works with single-account [Codex CLI](https://github.com/openai/codex) installs
+and multi-account [codex-auth](https://github.com/Loongphy/codex-auth) setups,
+refreshes OAuth tokens itself, and mirrors the official client's wire contract
+(pinned by tests against the upstream source).
 
 Use it only with accounts you own or are authorized to operate. Availability is
 determined by your account's live API response; the tool does not promise support
 for any specific plan or account class.
+
+## Why not just the Codex TUI?
+
+The official Codex TUI's `/usage` flow can redeem a credit for the account
+you're signed in with. `codex-reset` exists for everything around that:
+
+| | Codex TUI `/usage` | `codex-reset` |
+| --- | --- | --- |
+| Multiple accounts at a glance | ✗ (one at a time) | ✓ aggregates every discovered account |
+| Non-interactive / `--json` output for scripts, cron, CI | ✗ | ✓ |
+| Batch reset of all exhausted accounts | ✗ | ✓ `reset --all --yes` |
+| Credit expiry & countdown tracking | partial | ✓ `credits` |
+| Idempotent retry after a timeout | ✓ (session) | ✓ across CLI invocations |
 
 ## Install
 
@@ -54,18 +83,21 @@ codex-reset reset --all --yes
 
 ### `codex-reset list`
 
-Shows all discovered accounts with usage bars and credit count.
+Shows all discovered accounts with usage bars and credit count. Window labels
+(5h / Daily / Weekly / Monthly) are derived from what the backend reports —
+since OpenAI retired the 5-hour rolling window, most plans now show a Weekly
+primary with the secondary unavailable.
 
 ```
    1  main          <dev@example.com>       Plus      2 reset credits  reset available
-      5h limit:             [██████████████████░░] 88% left (resets 10:12)
-      Weekly limit:         [████████████████████] 100% left (resets 06:22 on 29 Jun)
+      Weekly limit:        [██████████████████░░] 88% left (resets 22:35 on 22 Aug)
+      Secondary limit:     unavailable
 
    2  personal      <person@example.com>    Plus      1 reset credit   ok
-      5h limit:             [████████████████████] 99% left (resets 11:44)
-      Weekly limit:         [██████████████░░░░░░] 70% left (resets 07:30 on 30 Jun)
+      Weekly limit:        [████████████████████] 99% left (resets 06:22 on 29 Aug)
+      Secondary limit:     unavailable
 
-Accounts: 2  •  Credits available: 3  •  Exhausted: 0  •  Lowest left: 5h 88%, weekly 70%
+Accounts: 2  •  Credits available: 3  •  Exhausted: 0  •  Lowest left: Weekly 88%, Secondary n/a
 ```
 
 ### `codex-reset credits`
@@ -103,10 +135,10 @@ Output shows before/after comparison:
 
 ```
   ✓ Reset successful for dev@example.com
-  Windows reset: 2
+  Windows reset: 1
 
-  5h limit:      [░░░░░░░░░░░░░░░░░░░░] 0% left → [████████████████████] 99% left
-  Weekly limit:  [░░░░░░░░░░░░░░░░░░░░] 0% left → [████████████████████] 100% left
+  Weekly limit:      [░░░░░░░░░░░░░░░░░░] 0% left → [████████████████████] 99% left
+  Secondary limit:   unavailable
   Credits:  2  →  1  left
 ```
 
@@ -211,6 +243,39 @@ usually neutralize such a retry, but the tool cannot rule out a second spend,
 which is why it warns instead of staying silent. This mirrors the
 idempotency-key retry semantics of the official TUI's
 `/usage → Redeem usage limit reset` flow.
+
+## Troubleshooting
+
+**`No Codex accounts found`** — there is no readable auth file. Run
+`codex login` (official Codex CLI) or `codex-auth login` (multi-account), or
+point `CODEX_HOME` at the directory holding `auth.json` /
+`accounts/*.auth.json`. API-key, agent-identity, and Bedrock auth files are
+skipped on purpose: those accounts have no ChatGPT rate limits to inspect.
+
+**`Unauthorized` / token expired** — codex-reset refreshes OAuth tokens
+automatically (and persists rotation). If the refresh token itself is expired,
+reused, or revoked, the error tells you which — sign in again with
+`codex login` or `codex-auth login`.
+
+**A keyring-backed `auth.json` is not found** — credential storage is
+file-based only; see [Supported auth modes and credential storage](#supported-auth-modes-and-credential-storage).
+
+**`Secondary limit: unavailable`** — not an error. OpenAI retired the 5-hour
+rolling window; most plans now report a single weekly (or daily/monthly)
+window, and absent windows render as unavailable. If OpenAI reintroduces a
+short window, labels pick it up automatically from the reported duration.
+
+**A personal-access-token (PAT) account is missing** — PAT accounts are
+verified against OpenAI's whoami endpoint during discovery; if that call fails
+(expired/revoked PAT, network), the account is skipped with a warning on
+stderr.
+
+**`429` responses** — the error carries the server's `Retry-After`; wait and
+rerun.
+
+**Where do redeemed credits go?** — consume is idempotent: a retry after a
+timeout reuses the original request id, so an ambiguous failure cannot silently
+spend a second credit. See [Idempotent redemption](#idempotent-redemption).
 
 ## Exit codes
 
