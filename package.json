@@ -1,7 +1,7 @@
 {
   "name": "codex-reset",
   "version": "0.2.1",
-  "description": "Inspect and redeem Codex rate-limit reset credits from the command line",
+  "description": "Inspect and redeem OpenAI Codex rate-limit reset credits from the command line — multi-account usage bars, credit expiry, and idempotent resets",
   "type": "module",
   "bin": {
     "codex-reset": "bin/codex-reset.js"
@@ -32,12 +32,21 @@
   "keywords": [
     "codex",
     "openai",
-    "rate-limit",
-    "reset",
-    "credits",
-    "cli",
+    "openai-codex",
     "codex-cli",
-    "codex-auth"
+    "codex-auth",
+    "chatgpt",
+    "rate-limit",
+    "rate-limit-reset",
+    "credits",
+    "usage",
+    "quota",
+    "reset",
+    "cli",
+    "terminal",
+    "nodejs",
+    "typescript",
+    "zero-dependencies"
   ],
   "license": "MIT",
   "author": "codex-reset contributors",
