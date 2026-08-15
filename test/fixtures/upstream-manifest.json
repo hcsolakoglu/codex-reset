@@ -1,0 +1,244 @@
+{
+  "source": {
+    "repo": "openai/codex",
+    "extractedFrom": [
+      "codex-rs/backend-client/src/client/rate_limit_resets.rs",
+      "codex-rs/backend-client/src/types.rs",
+      "codex-rs/codex-backend-openapi-models/src/models/rate_limit_status_payload.rs",
+      "codex-rs/codex-backend-openapi-models/src/models/rate_limit_status_details.rs",
+      "codex-rs/codex-backend-openapi-models/src/models/rate_limit_window_snapshot.rs",
+      "codex-rs/protocol/src/auth.rs",
+      "codex-rs/login/src/token_data.rs",
+      "codex-rs/login/src/auth/storage.rs",
+      "codex-rs/model-provider/src/bearer_auth_provider.rs",
+      "codex-rs/login/src/auth/manager.rs",
+      "codex-rs/login/src/auth/personal_access_token.rs"
+    ]
+  },
+  "endpoints": {
+    "usage": "/wham/usage",
+    "credits": "/wham/rate-limit-reset-credits",
+    "consume": "/wham/rate-limit-reset-credits/consume"
+  },
+  "consumeRequest": {
+    "fields": [
+      {
+        "name": "redeem_request_id",
+        "optionalWhenAbsent": false
+      },
+      {
+        "name": "credit_id",
+        "optionalWhenAbsent": true
+      }
+    ]
+  },
+  "consumeCodes": {
+    "casing": "snake_case",
+    "values": [
+      "reset",
+      "nothing_to_reset",
+      "no_credit",
+      "already_redeemed"
+    ]
+  },
+  "consumeResponse": {
+    "fields": [
+      "code",
+      "windows_reset"
+    ]
+  },
+  "creditFields": {
+    "required": [
+      "id",
+      "reset_type",
+      "status",
+      "granted_at"
+    ],
+    "optional": [
+      "expires_at",
+      "title",
+      "description"
+    ]
+  },
+  "creditsResponse": {
+    "fields": [
+      "credits",
+      "available_count"
+    ]
+  },
+  "usageResponse": {
+    "fields": [
+      "plan_type",
+      "rate_limit",
+      "credits",
+      "spend_control",
+      "additional_rate_limits",
+      "rate_limit_reached_type",
+      "rate_limit_reset_credits"
+    ],
+    "reachedTypeKinds": [
+      "rate_limit_reached",
+      "workspace_owner_credits_depleted",
+      "workspace_member_credits_depleted",
+      "workspace_owner_usage_limit_reached",
+      "workspace_member_usage_limit_reached",
+      "unknown"
+    ],
+    "planTypeValues": [
+      "guest",
+      "free",
+      "go",
+      "plus",
+      "pro",
+      "prolite",
+      "free_workspace",
+      "team",
+      "self_serve_business_prolite",
+      "self_serve_business_usage_based",
+      "business",
+      "ent26",
+      "enterprise_cbp_automation",
+      "enterprise_cbp_usage_based",
+      "education",
+      "quorum",
+      "k12",
+      "enterprise",
+      "edu",
+      "unknown"
+    ]
+  },
+  "rateLimitDetails": {
+    "fields": [
+      "allowed",
+      "limit_reached",
+      "primary_window",
+      "secondary_window"
+    ]
+  },
+  "windowFields": [
+    "used_percent",
+    "limit_window_seconds",
+    "reset_after_seconds",
+    "reset_at"
+  ],
+  "planDisplayNames": {
+    "free": "Free",
+    "go": "Go",
+    "plus": "Plus",
+    "pro": "Pro",
+    "prolite": "Pro Lite",
+    "team": "Team",
+    "self_serve_business_prolite": "Self Serve Business ProLite",
+    "self_serve_business_usage_based": "Self Serve Business Usage Based",
+    "business": "Business",
+    "ent26": "Enterprise",
+    "enterprise_cbp_automation": "Enterprise (Automation)",
+    "enterprise_cbp_usage_based": "Enterprise CBP Usage Based",
+    "enterprise": "Enterprise",
+    "hc": "Enterprise",
+    "education": "Edu",
+    "edu": "Edu"
+  },
+  "authModes": {
+    "ApiKey": "apikey",
+    "Chatgpt": "chatgpt",
+    "ChatgptAuthTokens": "chatgptAuthTokens",
+    "Headers": "headers",
+    "AgentIdentity": "agentIdentity",
+    "PersonalAccessToken": "personalAccessToken",
+    "BedrockApiKey": "bedrockApiKey"
+  },
+  "jwtClaims": {
+    "topLevelEmail": true,
+    "namespaces": [
+      "https://api.openai.com/profile",
+      "https://api.openai.com/auth"
+    ],
+    "authClaimKeys": [
+      "chatgpt_plan_type",
+      "chatgpt_user_id",
+      "user_id",
+      "chatgpt_account_id",
+      "chatgpt_account_is_fedramp"
+    ],
+    "profileClaimKeys": [
+      "email"
+    ],
+    "expClaim": [
+      "exp"
+    ]
+  },
+  "authFile": {
+    "fields": [
+      {
+        "name": "auth_mode",
+        "optional": true
+      },
+      {
+        "name": "OPENAI_API_KEY",
+        "optional": true
+      },
+      {
+        "name": "tokens",
+        "optional": true
+      },
+      {
+        "name": "last_refresh",
+        "optional": true
+      },
+      {
+        "name": "agent_identity",
+        "optional": true
+      },
+      {
+        "name": "personal_access_token",
+        "optional": true
+      },
+      {
+        "name": "bedrock_api_key",
+        "optional": true
+      }
+    ]
+  },
+  "headers": {
+    "authorizationScheme": "Bearer",
+    "accountIdHeader": "ChatGPT-Account-ID",
+    "literals": [
+      {
+        "name": "X-OpenAI-Fedramp",
+        "value": "true"
+      }
+    ]
+  },
+  "refresh": {
+    "url": "https://auth.openai.com/oauth/token",
+    "clientId": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "grantType": "refresh_token",
+    "requestFields": [
+      "client_id",
+      "grant_type",
+      "refresh_token"
+    ],
+    "responseFields": [
+      "id_token",
+      "access_token",
+      "refresh_token"
+    ],
+    "failureCodes": [
+      "refresh_token_expired",
+      "refresh_token_reused",
+      "refresh_token_invalidated"
+    ]
+  },
+  "patWhoami": {
+    "baseUrl": "https://auth.openai.com/api/accounts",
+    "path": "/v1/user-auth-credential/whoami",
+    "metadataFields": [
+      "email",
+      "chatgpt_user_id",
+      "chatgpt_account_id",
+      "chatgpt_plan_type",
+      "chatgpt_account_is_fedramp"
+    ]
+  }
+}

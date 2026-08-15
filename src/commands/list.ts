@@ -127,7 +127,7 @@ function renderList(usages: AccountUsage[]): string {
       (u.primaryPercent !== null && u.primaryPercent >= 100) ||
       (u.secondaryPercent !== null && u.secondaryPercent >= 100),
   ).length;
-  const lowest5h = lowestPercentLeft(usages.map((u) => u.primaryPercent));
+  const lowestPrimary = lowestPercentLeft(usages.map((u) => u.primaryPercent));
   const lowestWeekly = lowestPercentLeft(usages.map((u) => u.secondaryPercent));
   const primaryWindow = usages.find((u) => u.primaryPercent !== null);
   const secondaryWindow = usages.find((u) => u.secondaryPercent !== null);
@@ -142,7 +142,7 @@ function renderList(usages: AccountUsage[]): string {
 
   lines.push('');
   lines.push(
-    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: ${formatLowestSummary(primarySummaryLabel, lowest5h)}, ${formatLowestSummary(secondarySummaryLabel, lowestWeekly)}${reset}`,
+    `${dim}Accounts: ${usages.length}  •  Credits available: ${totalCredits}  •  Exhausted: ${exhausted}  •  Lowest left: ${formatLowestSummary(primarySummaryLabel, lowestPrimary)}, ${formatLowestSummary(secondarySummaryLabel, lowestWeekly)}${reset}`,
   );
 
   if (totalCredits > 0 && exhausted > 0) {

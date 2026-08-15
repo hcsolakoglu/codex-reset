@@ -23,8 +23,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/format.test.ts test/accounts.test.ts test/cli.test.ts test/api.test.ts test/reset-safety.test.ts",
-    "test:coverage": "node --import tsx --test --experimental-test-coverage test/format.test.ts test/accounts.test.ts test/cli.test.ts test/api.test.ts test/reset-safety.test.ts",
+    "test": "node --import tsx --test test/format.test.ts test/accounts.test.ts test/cli.test.ts test/api.test.ts test/reset-safety.test.ts test/api-boundary.test.ts test/http-transport.test.ts test/idempotency.test.ts test/e2e-weekly.test.ts test/upstream-contract.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage test/format.test.ts test/accounts.test.ts test/cli.test.ts test/api.test.ts test/reset-safety.test.ts test/api-boundary.test.ts test/http-transport.test.ts test/idempotency.test.ts test/e2e-weekly.test.ts test/upstream-contract.test.ts",
+    "manifest": "node tools/extract-upstream-manifest.mjs --out test/fixtures/upstream-manifest.json",
     "prepack": "npm run build && npm run typecheck && npm run lint",
     "smoke": "npm pack --dry-run"
   },

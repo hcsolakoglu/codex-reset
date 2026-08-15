@@ -26,6 +26,9 @@ const account: Account = {
   },
   alias: null,
   accountName: null,
+  filepath: null,
+  isFedramp: false,
+  authMode: 'chatgpt',
 };
 
 describe('normalizeUsage', () => {

@@ -120,12 +120,18 @@ Output shows before/after comparison:
 | `NO_COLOR=1`      | Disable colored output                      |
 | `FORCE_COLOR=1`   | Force colored output                        |
 
+Environment overrides used mostly by tests and local development:
+`CODEX_RESET_BASE_URL` (ChatGPT backend base, default
+`https://chatgpt.com/backend-api`), plus the upstream-honored
+`CODEX_REFRESH_TOKEN_URL_OVERRIDE`, `CODEX_APP_SERVER_LOGIN_CLIENT_ID`, and
+`CODEX_AUTHAPI_BASE_URL`.
+
 ## How it works
 
 1. **Account discovery**: Reads codex-auth multi-account files and falls back to official Codex CLI/Desktop `auth.json`
 2. **Usage check**: Calls `GET /backend-api/wham/usage` to fetch current rate-limit windows; missing windows are displayed as unavailable
 3. **Credit listing**: Calls `GET /backend-api/wham/rate-limit-reset-credits` to list individual credits, expiry, and reset scope
-4. **Credit consumption**: Calls `POST /backend-api/wham/rate-limit-reset-credits/consume` with a UUID `redeem_request_id` and the selected `credit_id` when the backend provides one
+4. **Credit consumption**: Calls `POST /backend-api/wham/rate-limit-reset-credits/consume` with a UUID `redeem_request_id` and the selected `credit_id` when the backend provides one. The idempotency key is persisted before the request so a retry of the *same* redemption reuses it (see [Idempotent redemption](#idempotent-redemption)).
 
 All requests use HTTPS with your existing OAuth access token. No credentials are stored or logged.
 
@@ -152,6 +158,60 @@ own copies under `~/.codex-switch/profiles/<alias>/auth.json`; those files are
 not treated as source of truth because they can go stale after codex-auth refreshes
 tokens.
 
+## Supported auth modes and credential storage
+
+The auth-file schema mirrors upstream `AuthDotJson` (openai/codex
+`login/src/auth/storage.rs`), which is also what codex-auth snapshots verbatim.
+
+| Auth mode | Behavior |
+| --------- | -------- |
+| `chatgpt` (OAuth tokens) | Fully supported. Tokens are refreshed automatically (see below) and rotated tokens are written back to the same file. |
+| `personalAccessToken` | Supported. The token is verified against `auth.openai.com …/user-auth-credential/whoami` (the same call upstream makes) to resolve email, account id, plan, and FedRAMP status, then used as the Bearer credential. |
+| `apikey`, `agentIdentity`, `bedrockApiKey` | Skipped with a warning — these have no ChatGPT rate limits to inspect or reset. |
+| Missing/unreadable credentials | Skipped with a warning; never crashes discovery. |
+
+**Credential storage is file-based only.** If you configured the official Codex
+CLI to store credentials in the OS keyring (`storage_mode = "keyring"` or
+`preferred_auth_mode` keyring settings in upstream Codex), `codex-reset` will
+not find them — it reads `auth.json` / `accounts/*.auth.json` only. Keep at
+least one file-based account, or run `codex login` with file storage.
+
+**Token refresh.** When the stored access token is expired (JWT `exp` claim) or
+the backend answers `401`, codex-reset performs the upstream refresh grant
+(`POST https://auth.openai.com/oauth/token`, client id
+`app_EMoamEEZ73f0CkXaXp7hrann`, overridable via
+`CODEX_APP_SERVER_LOGIN_CLIENT_ID` / `CODEX_REFRESH_TOKEN_URL_OVERRIDE`) and
+persists any rotated tokens before retrying the request once. If the refresh
+token itself is expired, revoked, or reused, you are told to sign in again.
+
+**FedRAMP.** Accounts whose id_token carries `chatgpt_account_is_fedramp: true`
+send `X-OpenAI-Fedramp: true` on every backend request, matching upstream
+routing.
+
+## Idempotent redemption
+
+Consuming a credit is destructive, and a network timeout after the server
+processed the request risks spending a second credit on retry. The redemption
+id (`redeem_request_id`) is written to `{CODEX_HOME}/pending-redeem.<account>.json`
+**before** the POST and kept until the outcome is resolved:
+
+- a 2xx response with a known result code, or a 4xx rejection → record cleared
+- timeout / connection reset / 5xx / a 2xx body with an *unknown* result code
+  (consumed but unreadable) → record kept as unresolved
+- rerunning `reset` for the **same account and same credit** within 24h reuses
+  the original id (surfacing `retrying unresolved redemption with its original
+  request id`), so the server's idempotency deduplicates the retry
+
+Limits of the guarantee, both announced on stderr when they occur: if the retry
+selects a **different credit** (e.g. the original one is no longer listed) or
+the unresolved record is older than 24h, a fresh id is minted — with the
+warning `a previous redemption attempt did not complete and may already have
+used a credit`. The server-side `nothing_to_reset`/`already_redeemed` codes
+usually neutralize such a retry, but the tool cannot rule out a second spend,
+which is why it warns instead of staying silent. This mirrors the
+idempotency-key retry semantics of the official TUI's
+`/usage → Redeem usage limit reset` flow.
+
 ## Exit codes
 
 | Code | Meaning                                       |
@@ -174,6 +234,24 @@ See [SECURITY.md](./SECURITY.md) for vulnerability reporting and security practi
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and PR process.
+
+### Maintaining the upstream contract
+
+`test/fixtures/upstream-manifest.json` is the machine-readable wire contract,
+generated from a pinned openai/codex checkout — never edit it by hand:
+
+```bash
+git clone --filter=blob:none --no-checkout --depth 1 \
+  https://github.com/openai/codex.git /tmp/codex-upstream
+cd /tmp/codex-upstream && git sparse-checkout set codex-rs && git checkout
+cd <codex-reset checkout> && npm run manifest -- --src /tmp/codex-upstream
+```
+
+`test/upstream-contract.test.ts` asserts this tool's request boundary against
+the manifest, and re-extracts it live when `/tmp/codex-upstream` (or
+`$CODEX_UPSTREAM_DIR`) exists. A weekly non-blocking
+[`upstream-drift`](.github/workflows/upstream-drift.yml) workflow regenerates
+the manifest from upstream HEAD and opens an issue on drift.
 
 ## Roadmap
 

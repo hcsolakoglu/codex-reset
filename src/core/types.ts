@@ -3,20 +3,28 @@
  * @module core/types
  */
 
-/** Raw auth.json token block. */
+/** Raw auth.json token block (upstream login TokenData). */
 export interface AuthTokens {
   access_token: string;
   refresh_token: string;
   id_token: string;
-  account_id: string;
+  account_id?: string | null;
 }
 
-/** Raw ~/.codex/accounts/*.auth.json structure. */
+/**
+ * Raw ~/.codex/auth.json / ~/.codex/accounts/*.auth.json structure.
+ * Mirrors upstream `AuthDotJson`: every field except the token block is
+ * optional, and modes other than ChatGPT OAuth carry their own credential
+ * field instead of `tokens`.
+ */
 export interface AuthFile {
-  auth_mode: string;
-  OPENAI_API_KEY: string | null;
-  tokens: AuthTokens;
-  last_refresh: string;
+  auth_mode?: string | null;
+  OPENAI_API_KEY?: string | null;
+  tokens?: AuthTokens | null;
+  last_refresh?: string | null;
+  agent_identity?: unknown;
+  personal_access_token?: string | null;
+  bedrock_api_key?: unknown;
 }
 
 /** A single rate-limit window. Codex may omit either window for some plans. */
@@ -82,7 +90,12 @@ export interface ConsumeResponse {
   };
 }
 
-/** A discovered account ready for API calls. */
+/**
+ * A discovered account ready for API calls. Bearer credential resolution:
+ * ChatGPT OAuth → `authFile.tokens.access_token`; PAT → hydrated at discovery.
+ * Fields marked optional were added after 0.2.0 and stay optional so external
+ * callers constructing an Account keep type-checking; discovery always sets them.
+ */
 export interface Account {
   email: string;
   planType: string;
@@ -90,6 +103,12 @@ export interface Account {
   authFile: AuthFile;
   alias: string | null;
   accountName: string | null;
+  /** Auth file the account was loaded from; null only for synthetic accounts. */
+  filepath?: string | null;
+  /** True when the id_token (or PAT metadata) marks the account as FedRAMP. */
+  isFedramp?: boolean;
+  /** Raw auth_mode value ("chatgpt", "personalAccessToken", ...). */
+  authMode?: string | null;
 }
 
 /** Normalized usage snapshot for display. `null` means the backend did not report that window. */

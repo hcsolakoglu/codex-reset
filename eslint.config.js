@@ -10,6 +10,16 @@ export default tseslint.config(
     ignores: ['dist/', 'node_modules/', 'bin/codex-reset.js'],
   },
   {
+    files: ['tools/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+      },
+    },
+  },
+  {
     rules: {
       '@typescript-eslint/no-unused-vars': [
         'error',

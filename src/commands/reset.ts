@@ -6,7 +6,7 @@
 
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import { discoverAccounts, findAccount } from '../core/accounts.js';
+import { discoverAccounts, findAccount, resolveCodexHome } from '../core/accounts.js';
 import {
   getCredits,
   getUsage,
@@ -14,6 +14,13 @@ import {
   generateRequestId,
   normalizeUsage,
 } from '../core/api.js';
+import {
+  clearPendingRedemption,
+  isAmbiguousConsumeFailure,
+  isReusablePending,
+  loadPendingRedemption,
+  savePendingRedemption,
+} from '../core/idempotency.js';
 import type { Account, AccountUsage, ResetCredit } from '../core/types.js';
 import {
   formatLimitBar,
@@ -203,7 +210,6 @@ async function executeReset(usage: AccountUsage, options: ResetOptions): Promise
     return { outcome: 'cancelled', windowsReset: 0 };
   }
 
-  const redeemRequestId = generateRequestId();
   const label = usage.account.alias || usage.account.email;
   const scope = activeWindowDescription(usage, credit);
 
@@ -217,7 +223,44 @@ async function executeReset(usage: AccountUsage, options: ResetOptions): Promise
     }
   }
 
-  const result = await consumeCredit(usage.account, redeemRequestId, credit?.id);
+  // Idempotent consume: persist the key before sending, reuse it when retrying
+  // an unresolved send, and clear it only once the outcome is definitive.
+  const codexHome = resolveCodexHome();
+  const creditId = credit?.id ?? null;
+  const pending = await loadPendingRedemption(codexHome, usage.account.accountId);
+  let redeemRequestId: string;
+  if (pending && isReusablePending(pending, usage.account.accountId, creditId)) {
+    redeemRequestId = pending.redeemRequestId;
+    process.stderr.write(
+      `${y('!')} ${label}: retrying unresolved redemption with its original request id\n`,
+    );
+  } else {
+    if (pending) {
+      // The prior send's outcome is still unknown: it may already have spent a
+      // credit. Say so instead of silently minting a fresh idempotency key.
+      process.stderr.write(
+        `${y('!')} ${label}: a previous redemption attempt did not complete and may already have used a credit — starting a new redemption with a fresh request id\n`,
+      );
+    }
+    redeemRequestId = generateRequestId();
+    await savePendingRedemption(codexHome, {
+      redeemRequestId,
+      accountId: usage.account.accountId,
+      creditId,
+      savedAt: new Date().toISOString(),
+    });
+  }
+
+  let result;
+  try {
+    result = await consumeCredit(usage.account, redeemRequestId, credit?.id);
+  } catch (err) {
+    if (!isAmbiguousConsumeFailure(err)) {
+      await clearPendingRedemption(codexHome, usage.account.accountId);
+    }
+    throw err;
+  }
+  await clearPendingRedemption(codexHome, usage.account.accountId);
   const windowsReset = result.windows_reset ?? 0;
 
   if (result.code === 'noCredit') {

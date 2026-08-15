@@ -1,10 +1,9 @@
 /**
  * ChatGPT backend API client — reads usage, lists credits, consumes credits.
- * Uses Node.js built-in https module. Zero dependencies.
+ * Talks through the injectable transport in core/http (zero dependencies).
  * @module core/api
  */
 
-import https from 'node:https';
 import { randomUUID } from 'node:crypto';
 import type {
   Account,
@@ -16,11 +15,45 @@ import type {
   UsageWindow,
 } from './types.js';
 import { ApiError } from '../utils/errors.js';
+import { getHttpTransport, TransportError } from './http.js';
+import { accessTokenIsExpired, refreshAccessToken } from './auth.js';
 
-const BASE_HOST = 'chatgpt.com';
-const BASE_PATH = '/backend-api/wham';
+// Upstream builds these as {base}/wham/... with base = chatgpt.com/backend-api
+// (PathStyle::ChatGptApi); endpoint paths below mirror that split exactly.
+const DEFAULT_BASE_URL = 'https://chatgpt.com/backend-api';
+const BASE_URL_ENV = 'CODEX_RESET_BASE_URL';
 const USER_AGENT = 'codex-reset/0.2.1';
 const TIMEOUT_MS = 15_000;
+const REFRESH_LOGIN_HINT =
+  'Token may be expired and could not be refreshed automatically. Run `codex login` or `codex-auth login`, then retry.';
+
+/** Resolve the backend base URL (override for tests via CODEX_RESET_BASE_URL). */
+export function resolveBaseUrl(): URL {
+  const raw = process.env[BASE_URL_ENV];
+  return new URL(raw && raw.trim().length > 0 ? raw.trim() : DEFAULT_BASE_URL);
+}
+
+/** Bearer credential: personal access token when present, else the OAuth access token. */
+export function bearerToken(account: Account): string {
+  return account.authFile.personal_access_token || account.authFile.tokens?.access_token || '';
+}
+
+/** Exact request headers for an API call (upstream BearerAuthProvider contract). */
+export function buildRequestHeaders(account: Account, hasBody: boolean): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${bearerToken(account)}`,
+    'ChatGPT-Account-Id': account.accountId,
+    'User-Agent': USER_AGENT,
+    Accept: 'application/json',
+  };
+  if (account.isFedramp) {
+    headers['X-OpenAI-Fedramp'] = 'true';
+  }
+  if (hasBody) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return headers;
+}
 
 interface RequestOptions {
   method: 'GET' | 'POST';
@@ -29,53 +62,40 @@ interface RequestOptions {
   body?: string;
 }
 
-/** Make a single HTTPS request to the ChatGPT backend. */
-function request(opts: RequestOptions): Promise<{ status: number; data: unknown }> {
-  return new Promise((resolve, reject) => {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${opts.account.authFile.tokens.access_token}`,
-      'ChatGPT-Account-Id': opts.account.accountId,
-      'User-Agent': USER_AGENT,
-      Accept: 'application/json',
-    };
-
-    if (opts.body) {
-      headers['Content-Type'] = 'application/json';
+/** Make a single request to the ChatGPT backend through the active transport. */
+async function request(opts: RequestOptions): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  data: unknown;
+}> {
+  const base = resolveBaseUrl();
+  const transport = getHttpTransport();
+  let res;
+  try {
+    res = await transport({
+      method: opts.method,
+      protocol: base.protocol === 'http:' ? 'http:' : 'https:',
+      hostname: base.hostname,
+      port: base.port ? Number(base.port) : undefined,
+      path: `${base.pathname.replace(/\/+$/, '')}${opts.path}`,
+      headers: buildRequestHeaders(opts.account, opts.body !== undefined),
+      body: opts.body,
+      timeoutMs: TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (err instanceof TransportError) {
+      throw new ApiError(err.message, 0, 'Check your network connection and try again.');
     }
+    throw err;
+  }
 
-    const req = https.request(
-      {
-        hostname: BASE_HOST,
-        path: opts.path,
-        method: opts.method,
-        headers,
-        timeout: TIMEOUT_MS,
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk: Buffer) => (data += chunk.toString()));
-        res.on('end', () => {
-          const status = res.statusCode ?? 0;
-          try {
-            resolve({ status, data: JSON.parse(data) });
-          } catch {
-            resolve({ status, data });
-          }
-        });
-      },
-    );
-
-    req.on('timeout', () => {
-      req.destroy(new Error('Request timed out'));
-    });
-
-    req.on('error', (err: Error) => {
-      reject(new ApiError(err.message, 0, 'Check your network connection and try again.'));
-    });
-
-    if (opts.body) req.write(opts.body);
-    req.end();
-  });
+  let data: unknown;
+  try {
+    data = JSON.parse(res.bodyText);
+  } catch {
+    data = res.bodyText;
+  }
+  return { status: res.status, headers: res.headers, data };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -170,19 +190,123 @@ export function createConsumeRequestBody(redeemRequestId: string, creditId?: str
   return JSON.stringify(body);
 }
 
+/** Format a Retry-After header value (delta seconds or HTTP-date) for display. */
+export function describeRetryAfter(value: string | undefined): string | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return `Retry after ${Math.ceil(seconds)} seconds.`;
+  }
+  const at = Date.parse(value);
+  if (!Number.isNaN(at)) {
+    return `Retry after ${new Date(at).toISOString()}.`;
+  }
+  return null;
+}
+
+function unauthorizedError(account: Account, refreshError?: Error): ApiError {
+  // When a refresh was attempted and failed, its classified message (upstream
+  // parity: expired / reused / revoked) is the actionable hint.
+  return new ApiError(
+    `Unauthorized for ${account.email}`,
+    401,
+    refreshError?.message ?? REFRESH_LOGIN_HINT,
+  );
+}
+
+/**
+ * Run a request with upstream-style token refresh: proactively refresh an
+ * expired access token, then retry once after a reactive 401. Refreshed
+ * tokens (including rotation) are persisted back to the account's auth file.
+ * A failed refresh is returned as `refreshError` rather than thrown.
+ */
+async function requestWithRefresh(opts: RequestOptions): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  data: unknown;
+  refreshError?: Error;
+}> {
+  const account = opts.account;
+  const tokens = account.authFile.tokens;
+
+  let refreshError: Error | undefined;
+  if (tokens?.refresh_token && accessTokenIsExpired(bearerToken(account))) {
+    refreshError = (await tryRefreshTokens(account)) ?? undefined;
+  }
+
+  const first = await request(opts);
+  if (first.status !== 401 || !tokens?.refresh_token) {
+    return { ...first, refreshError };
+  }
+
+  const failure = await tryRefreshTokens(account);
+  if (failure) return { ...first, refreshError: failure };
+  return request(opts);
+}
+
+/** Best-effort refresh; mutates the account's tokens and persists them. Returns the failure, or null on success. */
+async function tryRefreshTokens(account: Account): Promise<Error | null> {
+  const refreshToken = account.authFile.tokens?.refresh_token;
+  if (!refreshToken) return new Error('No refresh token available.');
+  try {
+    const refreshed = await refreshAccessToken(refreshToken);
+    const tokens = account.authFile.tokens;
+    if (!tokens) return new Error('Stored auth has no token block.');
+    if (refreshed.id_token) tokens.id_token = refreshed.id_token;
+    if (refreshed.access_token) tokens.access_token = refreshed.access_token;
+    // Rotation: the old refresh token stays valid when no new one is returned.
+    if (refreshed.refresh_token) tokens.refresh_token = refreshed.refresh_token;
+    account.authFile.last_refresh = new Date().toISOString();
+    await persistAuthFile(account);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+/** Write an account's (possibly refreshed) auth file back to disk atomically. */
+async function persistAuthFile(account: Account): Promise<void> {
+  if (!account.filepath) return;
+  try {
+    const { rename, writeFile } = await import('node:fs/promises');
+    // temp + rename so a crash mid-write can never leave a truncated auth file.
+    const temp = `${account.filepath}.codex-reset-tmp`;
+    await writeFile(temp, JSON.stringify(account.authFile, null, 2) + '\n', 'utf-8');
+    await rename(temp, account.filepath);
+  } catch {
+    // Persisting refreshed tokens is best-effort; the in-process token still works.
+  }
+}
+
 /** Fetch current usage state for an account. */
 export async function getUsage(account: Account): Promise<UsageResponse> {
-  const { status, data } = await request({
+  const { status, headers, data, refreshError } = await requestWithRefresh({
     method: 'GET',
-    path: `${BASE_PATH}/usage`,
+    path: '/wham/usage',
     account,
   });
 
   if (status === 401) {
+    throw unauthorizedError(account, refreshError);
+  }
+  if (status === 403) {
     throw new ApiError(
-      `Unauthorized for ${account.email}`,
-      401,
-      'Token may be expired. Run `codex-auth login` to refresh, then retry.',
+      `Usage API returned HTTP 403 for ${account.email}`,
+      403,
+      account.isFedramp
+        ? 'The request was sent with FedRAMP routing. The account may not have access to this feature or workspace.'
+        : 'The account may not have access to this feature or workspace.',
+    );
+  }
+  if (status === 429) {
+    const retry = describeRetryAfter(headers['retry-after']);
+    throw new ApiError(`Usage API rate limited (HTTP 429)`, 429, retry ?? 'Try again later.');
+  }
+  if (status >= 500) {
+    throw new ApiError(
+      `Usage API returned HTTP ${status}`,
+      status,
+      'The ChatGPT backend is having issues. Try again shortly.',
     );
   }
   if (status !== 200) {
@@ -196,18 +320,14 @@ export async function getUsage(account: Account): Promise<UsageResponse> {
 
 /** Fetch all reset credits (available + redeemed) for an account. */
 export async function getCredits(account: Account): Promise<CreditsResponse> {
-  const { status, data } = await request({
+  const { status, data, refreshError } = await requestWithRefresh({
     method: 'GET',
-    path: `${BASE_PATH}/rate-limit-reset-credits`,
+    path: '/wham/rate-limit-reset-credits',
     account,
   });
 
   if (status === 401) {
-    throw new ApiError(
-      `Unauthorized for ${account.email}`,
-      401,
-      'Token may be expired. Run `codex-auth login` to refresh, then retry.',
-    );
+    throw unauthorizedError(account, refreshError);
   }
   if (status !== 200) {
     throw new ApiError(`Credits API returned HTTP ${status}`, status);
@@ -249,19 +369,15 @@ export async function consumeCredit(
   redeemRequestId: string,
   creditId?: string,
 ): Promise<ConsumeResponse> {
-  const { status, data } = await request({
+  const { status, data, refreshError } = await requestWithRefresh({
     method: 'POST',
-    path: `${BASE_PATH}/rate-limit-reset-credits/consume`,
+    path: '/wham/rate-limit-reset-credits/consume',
     account,
     body: createConsumeRequestBody(redeemRequestId, creditId),
   });
 
   if (status === 401) {
-    throw new ApiError(
-      `Unauthorized for ${account.email}`,
-      401,
-      'Token may be expired. Run `codex-auth login` to refresh, then retry.',
-    );
+    throw unauthorizedError(account, refreshError);
   }
   if (status < 200 || status >= 300) {
     const errData = asRecord(data);
