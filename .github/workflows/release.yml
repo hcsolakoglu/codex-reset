@@ -32,11 +32,13 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
+      # No registry-url / NODE_AUTH_TOKEN: npm Trusted Publishing (OIDC)
+      # authenticates via the workflow's id-token, and any .npmrc token
+      # hook would take precedence over it.
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles older.
       - run: npm install -g npm@latest
