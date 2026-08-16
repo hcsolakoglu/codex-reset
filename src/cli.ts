@@ -9,8 +9,7 @@ import { creditsCommand } from './commands/credits.js';
 import { resetCommand } from './commands/reset.js';
 import { CliError } from './utils/errors.js';
 import { b, dim, cy, g, y, reset } from './utils/colors.js';
-
-const VERSION = '0.2.1';
+import { VERSION } from './version.js';
 
 const HELP = `${b('codex-reset')} ${dim}v${VERSION}${reset}
 ${cy('Inspect and redeem Codex rate-limit reset credits from the command line')}

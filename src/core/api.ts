@@ -16,13 +16,14 @@ import type {
 } from './types.js';
 import { ApiError } from '../utils/errors.js';
 import { getHttpTransport, TransportError } from './http.js';
+import { VERSION } from '../version.js';
 import { accessTokenIsExpired, refreshAccessToken } from './auth.js';
 
 // Upstream builds these as {base}/wham/... with base = chatgpt.com/backend-api
 // (PathStyle::ChatGptApi); endpoint paths below mirror that split exactly.
 const DEFAULT_BASE_URL = 'https://chatgpt.com/backend-api';
 const BASE_URL_ENV = 'CODEX_RESET_BASE_URL';
-const USER_AGENT = 'codex-reset/0.2.1';
+const USER_AGENT = `codex-reset/${VERSION}`;
 const TIMEOUT_MS = 15_000;
 const REFRESH_LOGIN_HINT =
   'Token may be expired and could not be refreshed automatically. Run `codex login` or `codex-auth login`, then retry.';

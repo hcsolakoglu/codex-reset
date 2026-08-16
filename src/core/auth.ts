@@ -8,6 +8,7 @@
  */
 
 import { getHttpTransport } from './http.js';
+import { VERSION } from '../version.js';
 import { decodeJwtPayload } from './accounts.js';
 
 const DEFAULT_WHOAMI_URL = 'https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami';
@@ -46,7 +47,7 @@ export async function fetchPatMetadata(accessToken: string): Promise<PatMetadata
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
-      'User-Agent': 'codex-reset/0.2.1',
+      'User-Agent': `codex-reset/${VERSION}`,
     },
     timeoutMs: REQUEST_TIMEOUT_MS,
   });
@@ -123,7 +124,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<Refreshe
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      'User-Agent': 'codex-reset/0.2.1',
+      'User-Agent': `codex-reset/${VERSION}`,
     },
     body: JSON.stringify({
       client_id: clientId,

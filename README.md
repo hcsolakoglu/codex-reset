@@ -320,7 +320,7 @@ the manifest from upstream HEAD and opens an issue on drift.
 
 ## Roadmap
 
-### v0.2 — Watch & Auto
+### Next — Watch & Auto
 
 - **`codex-reset watch`** — Live TUI dashboard with real-time usage bars, credit countdown timers, auto-refresh every 30s, press `r` to reset
 - **`codex-reset auto`** — Auto-reset daemon with configurable thresholds (`--threshold-7d 90`), background mode, systemd service support
@@ -329,7 +329,7 @@ the manifest from upstream HEAD and opens an issue on drift.
 - **`codex-reset doctor`** — Diagnostics: auth validity, API connectivity, config check
 - **`codex-reset config`** — Persistent config for notification prefs, thresholds, default account, custom API base URL
 
-### v0.3 — Power features
+### Later — Power features
 
 - **`codex-reset alerts`** — Credit expiring soon warnings, usage critical alerts, auto-reset triggered notifications
 - **`codex-reset expire`** — Show credits expiring within N days, sorted by urgency

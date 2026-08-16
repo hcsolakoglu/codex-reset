@@ -13,6 +13,7 @@ import { setHttpTransport, TransportError } from '../src/core/http.ts';
 import type { TransportResponse } from '../src/core/http.ts';
 import { consumeCredit, getCredits, getUsage } from '../src/core/api.ts';
 import { ApiError } from '../src/utils/errors.ts';
+import { VERSION } from '../src/version.ts';
 import {
   fakeTransport,
   jsonResponse,
@@ -56,7 +57,7 @@ describe('request boundary', () => {
     assert.equal(req.headers['Authorization'], 'Bearer ' + oauthAuthFile().tokens!.access_token);
     assert.equal(req.headers['ChatGPT-Account-Id'], 'acct-123');
     assert.equal(req.headers['Accept'], 'application/json');
-    assert.equal(req.headers['User-Agent'], 'codex-reset/0.2.1');
+    assert.equal(req.headers['User-Agent'], `codex-reset/${VERSION}`);
     assert.equal(req.headers['Content-Type'], undefined);
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-reset",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Inspect and redeem OpenAI Codex rate-limit reset credits from the command line — multi-account usage bars, credit expiry, and idempotent resets",
   "type": "module",
   "bin": {
