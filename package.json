@@ -1,7 +1,7 @@
 {
   "name": "codex-reset",
   "version": "0.3.0",
-  "description": "Inspect and redeem OpenAI Codex rate-limit reset credits from the command line — multi-account usage bars, credit expiry, and idempotent resets",
+  "description": "Inspect and redeem OpenAI Codex rate-limit reset credits from the command line \u2014 multi-account usage bars, credit expiry, and idempotent resets",
   "type": "module",
   "bin": {
     "codex-reset": "bin/codex-reset.js"
@@ -59,5 +59,13 @@
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hcsolakoglu/codex-reset.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hcsolakoglu/codex-reset/issues"
+  },
+  "homepage": "https://github.com/hcsolakoglu/codex-reset#readme"
 }
