@@ -38,6 +38,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles older.
+      - run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
@@ -45,11 +48,13 @@ jobs:
       - run: npm run build
       - run: npm pack --dry-run
 
+      # Publishes with no token: npm authenticates this job via GitHub Actions
+      # OIDC (workflow-level id-token: write), matched against the package's
+      # registered trusted publisher (repo hcsolakoglu/codex-reset, workflow
+      # release.yml, environment release).
       - name: Publish to npm
         if: inputs.publish_npm == true
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         if: inputs.create_github_release == true
