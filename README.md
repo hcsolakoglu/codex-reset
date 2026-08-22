@@ -2,54 +2,61 @@
 
 # codex-reset
 
-**Inspect and redeem OpenAI Codex rate-limit reset credits from the command line — multi-account usage bars, credit expiry, idempotent resets, JSON output**
+**Open-source CLI for inspecting Codex usage limits and safely redeeming OpenAI-issued rate-limit reset credits across one or multiple accounts.**
 
 [![npm](https://img.shields.io/npm/v/codex-reset.svg)](https://www.npmjs.com/package/codex-reset)
 [![npm downloads](https://img.shields.io/npm/dm/codex-reset.svg)](https://www.npmjs.com/package/codex-reset)
 [![CI](https://github.com/hcsolakoglu/codex-reset/actions/workflows/ci.yml/badge.svg)](https://github.com/hcsolakoglu/codex-reset/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node](https://img.shields.io/node/v/codex-reset.svg)](https://nodejs.org)
+
+[Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Security](#security) · [Contributing](#contributing)
 
 </div>
 
 ---
 
+`codex-reset` is an independent open-source companion for the official [OpenAI Codex CLI](https://github.com/openai/codex). It exposes account usage windows and OpenAI-issued reset credits in a scriptable terminal workflow, with multi-account discovery, JSON output, expiry tracking, and idempotent redemption safeguards.
+
+It **does not create credits, bypass plan limits, increase quotas, or unlock access that an account does not already have**. Credit availability and reset scope come directly from the account's live OpenAI response.
+
+## Why this project exists
+
+Codex users can inspect usage from the official client, but automation and multi-account workflows need a small, auditable CLI surface. `codex-reset` focuses on that operational gap:
+
+- inspect live Codex usage windows and remaining capacity
+- list OpenAI-issued reset credits and expiration dates
+- work with official single-account Codex auth and `codex-auth` multi-account setups
+- redeem credits interactively or non-interactively with explicit confirmation
+- produce stable JSON for scripts and automation
+- preserve redemption idempotency across process restarts after ambiguous network failures
+
+The project tracks the upstream Codex wire contract with a pinned machine-readable manifest and a weekly drift workflow. CI runs on Linux, macOS, and Windows across supported Node releases. npm releases use GitHub Actions OIDC trusted publishing with provenance.
+
 ## What it does
 
-OpenAI grants some Codex accounts **rate-limit reset credits** — one-shot
-credits that clear your usage windows when you hit the ChatGPT plan limits for
-Codex. `codex-reset` makes those credits visible and redeemable from the
-terminal:
+OpenAI grants some Codex accounts **rate-limit reset credits**. `codex-reset` makes those credits visible and redeemable from the terminal:
 
-- **`list`** — every account with live usage bars (5h / daily / weekly /
-  monthly windows, labeled from what the backend actually reports), remaining
-  capacity, and reset-credit counts
-- **`credits`** — individual credits with grant dates, expiry dates, and
-  countdowns, so nothing expires unused
-- **`reset`** — redeem a credit interactively, by account, or in batch, with
-  before/after usage comparison
+- **`list`** — show discovered accounts, live usage windows, remaining capacity, reset times, and credit counts
+- **`credits`** — list individual credits with grant dates, expiry dates, countdowns, and reset scope
+- **`reset`** — redeem a credit interactively, by account, or in batch, with before/after usage comparison
 
-Works with single-account [Codex CLI](https://github.com/openai/codex) installs
-and multi-account [codex-auth](https://github.com/Loongphy/codex-auth) setups,
-refreshes OAuth tokens itself, and mirrors the official client's wire contract
-(pinned by tests against the upstream source).
+It refreshes supported OAuth credentials when needed and mirrors the official client's request boundary through upstream-contract tests.
 
-Use it only with accounts you own or are authorized to operate. Availability is
-determined by your account's live API response; the tool does not promise support
-for any specific plan or account class.
+Use it only with accounts you own or are authorized to operate.
 
 ## Why not just the Codex TUI?
 
-The official Codex TUI's `/usage` flow can redeem a credit for the account
-you're signed in with. `codex-reset` exists for everything around that:
+The official Codex TUI can handle the signed-in account. `codex-reset` is aimed at visibility and automation around that flow:
 
-| | Codex TUI `/usage` | `codex-reset` |
+| Capability | Codex TUI | `codex-reset` |
 | --- | --- | --- |
-| Multiple accounts at a glance | ✗ (one at a time) | ✓ aggregates every discovered account |
-| Non-interactive / `--json` output for scripts, cron, CI | ✗ | ✓ |
-| Batch reset of all exhausted accounts | ✗ | ✓ `reset --all --yes` |
-| Credit expiry & countdown tracking | partial | ✓ `credits` |
-| Idempotent retry after a timeout | ✓ (session) | ✓ across CLI invocations |
+| Multiple accounts at a glance | One at a time | Aggregates discovered accounts |
+| Scriptable JSON output | Limited | Yes |
+| Credit expiry tracking | Limited | Yes |
+| Batch operation | No | `reset --all --yes` |
+| Idempotent retry across CLI invocations | Session-scoped | Persisted redemption identity |
+| Upstream contract drift check | N/A | Weekly automated check |
 
 ## Install
 
@@ -57,7 +64,7 @@ you're signed in with. `codex-reset` exists for everything around that:
 npm install -g codex-reset
 ```
 
-Or run without installing:
+Or run without a global install:
 
 ```bash
 npx codex-reset list
@@ -66,275 +73,184 @@ npx codex-reset list
 ## Quick start
 
 ```bash
-# See all your accounts with live usage
+# Show live Codex usage for discovered accounts
 codex-reset list
 
-# Check available credits with expiry dates
+# List available OpenAI-issued reset credits and expirations
 codex-reset credits
 
-# Reset an account (interactive picker; selects a specific credit when available)
+# Redeem a credit with an interactive account picker
 codex-reset reset
 
-# Reset all exhausted accounts, no prompts
+# Redeem for all currently eligible accounts without prompts
 codex-reset reset --all --yes
+
+# Machine-readable output
+codex-reset list --json
 ```
 
 ## Commands
 
 ### `codex-reset list`
 
-Shows all discovered accounts with usage bars and credit count. Window labels
-(5h / Daily / Weekly / Monthly) are derived from what the backend reports —
-since OpenAI retired the 5-hour rolling window, most plans now show a Weekly
-primary with the secondary unavailable.
+Shows discovered accounts with usage windows and credit counts. Window labels are derived from the backend response instead of being hard-coded to a particular plan shape.
 
-```
+```text
    1  main          <dev@example.com>       Plus      2 reset credits  reset available
       Weekly limit:        [██████████████████░░] 88% left (resets 22:35 on 22 Aug)
       Secondary limit:     unavailable
 
-   2  personal      <person@example.com>    Plus      1 reset credit   ok
-      Weekly limit:        [████████████████████] 99% left (resets 06:22 on 29 Aug)
-      Secondary limit:     unavailable
-
-Accounts: 2  •  Credits available: 3  •  Exhausted: 0  •  Lowest left: Weekly 88%, Secondary n/a
+Accounts: 1  •  Credits available: 2  •  Exhausted: 0  •  Lowest left: Weekly 88%
 ```
 
 ### `codex-reset credits`
 
-Shows individual credits with grant date, expiry date, and countdown.
+Shows each available reset credit with grant and expiry information.
 
-```
+```text
   dev@example.com (Plus)  2 available
     #b4f53a61d614  granted Jun 12, 2026  expires Jul 12, 2026  20d left
     #2815139a8ea0  granted Jun 18, 2026  expires Jul 18, 2026  26d left
-
-  Total available credits: 5
 ```
 
 ### `codex-reset reset [query]`
 
-Consumes a reset credit to clear the usage window(s) reported by the backend.
-Some plans expose only one window, and reset scope can be weekly, five-hour,
-monthly, or another backend-defined scope.
+Consumes a reset credit for the selected account when the live backend marks it eligible.
 
 ```bash
-codex-reset reset              # interactive picker
-codex-reset reset 2            # by list index
-codex-reset reset me@example.com # by email
-codex-reset reset --all        # reset all eligible accounts
-codex-reset reset --all --yes  # no confirmation prompt
-codex-reset reset --json --yes # confirmed non-interactive JSON mode
+codex-reset reset
+codex-reset reset 2
+codex-reset reset me@example.com
+codex-reset reset --all
+codex-reset reset --all --yes
+codex-reset reset --json --yes
 ```
 
-`--json` never confirms a destructive operation by itself. Passing `--json`
-without `--yes` exits safely before any network request or consume request.
-Batch mode emits exactly one JSON document with a `results` array.
-
-Output shows before/after comparison:
-
-```
-  ✓ Reset successful for dev@example.com
-  Windows reset: 1
-
-  Weekly limit:      [░░░░░░░░░░░░░░░░░░] 0% left → [████████████████████] 99% left
-  Secondary limit:   unavailable
-  Credits:  2  →  1  left
-```
+`--json` never confirms a destructive operation by itself. Without `--yes`, non-interactive reset exits before a consume request is sent.
 
 ## Global options
 
-| Flag              | Description                                 |
-| ----------------- | ------------------------------------------- |
-| `--json`          | Machine-readable JSON output (all commands) |
-| `--help`, `-h`    | Show help                                   |
-| `--version`, `-V` | Show version                                |
-| `NO_COLOR=1`      | Disable colored output                      |
-| `FORCE_COLOR=1`   | Force colored output                        |
-
-Environment overrides used mostly by tests and local development:
-`CODEX_RESET_BASE_URL` (ChatGPT backend base, default
-`https://chatgpt.com/backend-api`), plus the upstream-honored
-`CODEX_REFRESH_TOKEN_URL_OVERRIDE`, `CODEX_APP_SERVER_LOGIN_CLIENT_ID`, and
-`CODEX_AUTHAPI_BASE_URL`.
+| Flag | Description |
+| --- | --- |
+| `--json` | Machine-readable JSON output |
+| `--help`, `-h` | Show help |
+| `--version`, `-V` | Show version |
+| `NO_COLOR=1` | Disable colored output |
+| `FORCE_COLOR=1` | Force colored output |
 
 ## How it works
 
-1. **Account discovery**: Reads codex-auth multi-account files and falls back to official Codex CLI/Desktop `auth.json`
-2. **Usage check**: Calls `GET /backend-api/wham/usage` to fetch current rate-limit windows; missing windows are displayed as unavailable
-3. **Credit listing**: Calls `GET /backend-api/wham/rate-limit-reset-credits` to list individual credits, expiry, and reset scope
-4. **Credit consumption**: Calls `POST /backend-api/wham/rate-limit-reset-credits/consume` with a UUID `redeem_request_id` and the selected `credit_id` when the backend provides one. The idempotency key is persisted before the request so a retry of the *same* redemption reuses it (see [Idempotent redemption](#idempotent-redemption)).
+1. **Account discovery** — reads `codex-auth` multi-account files and falls back to the official Codex CLI/Desktop `auth.json` file.
+2. **Usage inspection** — queries the live account usage endpoint and renders the windows returned by the backend.
+3. **Credit listing** — queries the account's available rate-limit reset credits and their expiry/reset scope.
+4. **Credit redemption** — sends the selected credit with a persisted `redeem_request_id` so retries of the same ambiguous redemption can reuse the same identity.
 
-All requests use HTTPS with your existing OAuth access token. No credentials are stored or logged.
+All network requests use HTTPS with existing supported Codex credentials. The project does not maintain its own account database and does not log credentials.
 
-## Account discovery
+### Account discovery
 
-`codex-reset` auto-discovers Codex auth files without configuration. It follows
-the same Codex home resolution used by the official Codex CLI and codex-auth:
+`codex-reset` resolves Codex home in this order:
 
 1. `CODEX_HOME` when set
 2. `$HOME/.codex` on Linux/macOS
 3. `%USERPROFILE%\.codex` on Windows when `HOME` is unavailable
 4. Node's `os.homedir()/.codex` fallback
 
-Within Codex home it checks:
+It checks:
 
-- `accounts/*.auth.json` plus `accounts/registry.json` from
-  [`codex-auth`](https://github.com/Loongphy/codex-auth), supporting multiple
-  accounts and aliases.
-- `auth.json` from the official Codex CLI / Codex Desktop App, supporting
-  single-account installs that do not use codex-auth.
+- `accounts/*.auth.json` and `accounts/registry.json` from [`codex-auth`](https://github.com/Loongphy/codex-auth)
+- `auth.json` from the official Codex CLI / Codex Desktop App
 
-This matches the storage shape used by `codex-auth`. `codex-switch` stores its
-own copies under `~/.codex-switch/profiles/<alias>/auth.json`; those files are
-not treated as source of truth because they can go stale after codex-auth refreshes
-tokens.
-
-## Supported auth modes and credential storage
-
-The auth-file schema mirrors upstream `AuthDotJson` (openai/codex
-`login/src/auth/storage.rs`), which is also what codex-auth snapshots verbatim.
+### Supported auth modes
 
 | Auth mode | Behavior |
-| --------- | -------- |
-| `chatgpt` (OAuth tokens) | Fully supported. Tokens are refreshed automatically (see below) and rotated tokens are written back to the same file. |
-| `personalAccessToken` | Supported. The token is verified against `auth.openai.com …/user-auth-credential/whoami` (the same call upstream makes) to resolve email, account id, plan, and FedRAMP status, then used as the Bearer credential. |
-| `apikey`, `agentIdentity`, `bedrockApiKey` | Skipped with a warning — these have no ChatGPT rate limits to inspect or reset. |
-| Missing/unreadable credentials | Skipped with a warning; never crashes discovery. |
+| --- | --- |
+| `chatgpt` OAuth tokens | Supported, including refresh and token rotation persistence |
+| `personalAccessToken` | Supported when account identity can be resolved by the upstream-compatible flow |
+| API-key / agent-identity / Bedrock modes | Skipped because they do not expose ChatGPT plan usage/reset credits |
+| Missing or unreadable credentials | Skipped with a warning |
 
-**Credential storage is file-based only.** If you configured the official Codex
-CLI to store credentials in the OS keyring (`storage_mode = "keyring"` or
-`preferred_auth_mode` keyring settings in upstream Codex), `codex-reset` will
-not find them — it reads `auth.json` / `accounts/*.auth.json` only. Keep at
-least one file-based account, or run `codex login` with file storage.
+File-backed Codex credentials are required. If the official CLI is configured for keyring-only storage, `codex-reset` cannot read those credentials.
 
-**Token refresh.** When the stored access token is expired (JWT `exp` claim) or
-the backend answers `401`, codex-reset performs the upstream refresh grant
-(`POST https://auth.openai.com/oauth/token`, client id
-`app_EMoamEEZ73f0CkXaXp7hrann`, overridable via
-`CODEX_APP_SERVER_LOGIN_CLIENT_ID` / `CODEX_REFRESH_TOKEN_URL_OVERRIDE`) and
-persists any rotated tokens before retrying the request once. If the refresh
-token itself is expired, revoked, or reused, you are told to sign in again.
+## Redemption safety and idempotency
 
-**FedRAMP.** Accounts whose id_token carries `chatgpt_account_is_fedramp: true`
-send `X-OpenAI-Fedramp: true` on every backend request, matching upstream
-routing.
+Credit consumption is destructive, so ambiguous failures are handled conservatively. Before a consume request, `codex-reset` persists the redemption identity to `{CODEX_HOME}/pending-redeem.<account>.json`.
 
-## Idempotent redemption
+- known success or a definitive client rejection clears the pending record
+- timeout, connection reset, server error, or unknown success payload keeps it unresolved
+- retrying the same account and credit within the bounded retry window reuses the original redemption identity
 
-Consuming a credit is destructive, and a network timeout after the server
-processed the request risks spending a second credit on retry. The redemption
-id (`redeem_request_id`) is written to `{CODEX_HOME}/pending-redeem.<account>.json`
-**before** the POST and kept until the outcome is resolved:
+If the retry targets a different credit or the unresolved record is too old, the CLI warns before generating a fresh identity. The goal is to avoid silently spending a second credit after a network failure.
 
-- a 2xx response with a known result code, or a 4xx rejection → record cleared
-- timeout / connection reset / 5xx / a 2xx body with an *unknown* result code
-  (consumed but unreadable) → record kept as unresolved
-- rerunning `reset` for the **same account and same credit** within 24h reuses
-  the original id (surfacing `retrying unresolved redemption with its original
-  request id`), so the server's idempotency deduplicates the retry
+## Upstream compatibility
 
-Limits of the guarantee, both announced on stderr when they occur: if the retry
-selects a **different credit** (e.g. the original one is no longer listed) or
-the unresolved record is older than 24h, a fresh id is minted — with the
-warning `a previous redemption attempt did not complete and may already have
-used a credit`. The server-side `nothing_to_reset`/`already_redeemed` codes
-usually neutralize such a retry, but the tool cannot rule out a second spend,
-which is why it warns instead of staying silent. This mirrors the
-idempotency-key retry semantics of the official TUI's
-`/usage → Redeem usage limit reset` flow.
+`codex-reset` intentionally treats the official [`openai/codex`](https://github.com/openai/codex) implementation as the upstream contract rather than inventing a parallel protocol.
+
+`test/fixtures/upstream-manifest.json` is generated from a pinned Codex checkout and captures the request boundary used by this project. `test/upstream-contract.test.ts` checks the implementation against that manifest.
+
+A weekly [`upstream-drift`](.github/workflows/upstream-drift.yml) workflow regenerates the manifest against upstream HEAD and opens an issue when the relevant contract changes.
+
+This makes compatibility work visible, reviewable, and maintainable instead of relying on undocumented assumptions.
+
+## Quality and supply-chain practices
+
+The repository includes:
+
+- TypeScript type checking and ESLint
+- automated unit, API-boundary, reset-safety, HTTP transport, idempotency, E2E, and upstream-contract tests
+- CI on Linux, Windows, and macOS with Node 22/24 coverage
+- `npm pack --dry-run` and CLI smoke checks before release
+- npm Trusted Publishing through GitHub Actions OIDC
+- npm provenance on published releases
+- `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and MIT licensing
 
 ## Troubleshooting
 
-**`No Codex accounts found`** — there is no readable auth file. Run
-`codex login` (official Codex CLI) or `codex-auth login` (multi-account), or
-point `CODEX_HOME` at the directory holding `auth.json` /
-`accounts/*.auth.json`. API-key, agent-identity, and Bedrock auth files are
-skipped on purpose: those accounts have no ChatGPT rate limits to inspect.
+**No Codex accounts found**
 
-**`Unauthorized` / token expired** — codex-reset refreshes OAuth tokens
-automatically (and persists rotation). If the refresh token itself is expired,
-reused, or revoked, the error tells you which — sign in again with
-`codex login` or `codex-auth login`.
+Run `codex login` or `codex-auth login`, or point `CODEX_HOME` to the directory containing the supported auth files.
 
-**A keyring-backed `auth.json` is not found** — credential storage is
-file-based only; see [Supported auth modes and credential storage](#supported-auth-modes-and-credential-storage).
+**Unauthorized / expired token**
 
-**`Secondary limit: unavailable`** — not an error. OpenAI retired the 5-hour
-rolling window; most plans now report a single weekly (or daily/monthly)
-window, and absent windows render as unavailable. If OpenAI reintroduces a
-short window, labels pick it up automatically from the reported duration.
+The CLI attempts the same supported refresh flow used by the upstream client. If the refresh credential is revoked or expired, sign in again.
 
-**A personal-access-token (PAT) account is missing** — PAT accounts are
-verified against OpenAI's whoami endpoint during discovery; if that call fails
-(expired/revoked PAT, network), the account is skipped with a warning on
-stderr.
+**A secondary limit is unavailable**
 
-**`429` responses** — the error carries the server's `Retry-After`; wait and
-rerun.
+That is not necessarily an error. The CLI displays the windows actually returned for the account instead of assuming a fixed quota shape.
 
-**Where do redeemed credits go?** — consume is idempotent: a retry after a
-timeout reuses the original request id, so an ambiguous failure cannot silently
-spend a second credit. See [Idempotent redemption](#idempotent-redemption).
+**HTTP 429**
 
-## Exit codes
-
-| Code | Meaning                                       |
-| ---- | --------------------------------------------- |
-| 0    | Success                                       |
-| 1    | General error                                 |
-| 2    | Auth error (no accounts found, token expired) |
-| 3    | API/network error                             |
+The CLI reports the server retry guidance. Wait for the reported interval and rerun.
 
 ## Requirements
 
 - Node.js >= 22.13.0
-- [Codex CLI](https://github.com/openai/codex) installed and logged in
-- [codex-auth](https://github.com/Loongphy/codex-auth) for account management (recommended)
+- OpenAI Codex CLI installed and authenticated
+- `codex-auth` only if multi-account discovery is desired
 
 ## Security
 
-See [SECURITY.md](./SECURITY.md) for vulnerability reporting and security practices.
+This project handles authentication material that already exists on the local machine. Security-sensitive changes should be reviewed carefully.
+
+See [SECURITY.md](./SECURITY.md) for the vulnerability-reporting process and security notes.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and PR process.
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup, testing, and pull-request expectations.
 
-### Maintaining the upstream contract
+Useful contribution areas include:
 
-`test/fixtures/upstream-manifest.json` is the machine-readable wire contract,
-generated from a pinned openai/codex checkout — never edit it by hand:
+- compatibility updates after upstream Codex changes
+- additional regression and cross-platform coverage
+- clearer diagnostics and account discovery
+- safer automation surfaces
+- documentation and reproducible bug reports
 
-```bash
-git clone --filter=blob:none --no-checkout --depth 1 \
-  https://github.com/openai/codex.git /tmp/codex-upstream
-cd /tmp/codex-upstream && git sparse-checkout set codex-rs && git checkout
-cd <codex-reset checkout> && npm run manifest -- --src /tmp/codex-upstream
-```
+## Project status
 
-`test/upstream-contract.test.ts` asserts this tool's request boundary against
-the manifest, and re-extracts it live when `/tmp/codex-upstream` (or
-`$CODEX_UPSTREAM_DIR`) exists. A weekly non-blocking
-[`upstream-drift`](.github/workflows/upstream-drift.yml) workflow regenerates
-the manifest from upstream HEAD and opens an issue on drift.
+The project is actively maintained as an independent community tool around Codex account usage and OpenAI-issued reset credits. It is **not an official OpenAI project** and is not endorsed by OpenAI.
 
-## Roadmap
-
-### Next — Watch & Auto
-
-- **`codex-reset watch`** — Live TUI dashboard with real-time usage bars, credit countdown timers, auto-refresh every 30s, press `r` to reset
-- **`codex-reset auto`** — Auto-reset daemon with configurable thresholds (`--threshold-7d 90`), background mode, systemd service support
-- **`codex-reset notify`** — Push notifications via Telegram (`--telegram <token:chat_id>`), Discord webhooks, and OS native (`--desktop`)
-- **`codex-reset history`** — Local reset log at `~/.codex-reset/history.jsonl`
-- **`codex-reset doctor`** — Diagnostics: auth validity, API connectivity, config check
-- **`codex-reset config`** — Persistent config for notification prefs, thresholds, default account, custom API base URL
-
-### Later — Power features
-
-- **`codex-reset alerts`** — Credit expiring soon warnings, usage critical alerts, auto-reset triggered notifications
-- **`codex-reset expire`** — Show credits expiring within N days, sorted by urgency
-- **Shell completions** — bash, zsh, fish, PowerShell
-- **`--watch` flag on `list`** — Continuous refresh mode without full TUI
+For changes that affect authentication, usage reporting, or redemption semantics, compatibility is validated against the upstream Codex source and the repository's automated test suite.
 
 ## License
 
